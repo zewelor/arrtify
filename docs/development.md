@@ -20,7 +20,9 @@ these checks; a sandbox denying either is a verification limitation, not a pass.
 E2E verifies the explicit observation/limit names, threshold explanations and their consistency between JSON logs
 and reports, including an unmet ratio after minimum seed time. It also covers both full Arr queues (including an uppercase hash on page 2), ignored
 trackers, the maximum branch with a sentinel ratio, invalid source data, required
-credentials, offline `--check`, rejected apply/conflicting flags, redaction, and
+credentials, configuration-file precedence (`--config`, `ARRTIFY_CONFIG_FILE`,
+default working-directory file), invalid/empty path handling without fallback,
+offline `--check`, rejected apply/conflicting flags, redaction, and
 SIGTERM during I/O. Unit/HTTP tests cover strict config, threshold boundaries,
 first-rule priority, missing fields, pagination errors, protocol handshakes,
 redirect rejection, bounded reads and cancellation. Test servers and files are
@@ -115,8 +117,10 @@ network, so rootless Docker does not need access to host loopback servers. The
 application container runs non-root with read-only root, all capabilities dropped,
 no-new-privileges and a read-only config mount. Scenarios cover offline `--check`
 with networking disabled, a nontrivial dry-run with both queue guards and
-`would_delete` candidates, and a failed Arr queue. The fixture records actual
-request/mutation counts; all scenarios must have zero mutations. Containers and
+`would_delete` candidates, and a failed Arr queue. Networked container scenarios
+select the configuration through `ARRTIFY_CONFIG_FILE` without a CLI override.
+The fixture records actual request/mutation counts; all scenarios must have zero
+mutations. Containers and
 the network are removed after testing. No Compose stack or production credentials
 are involved.
 

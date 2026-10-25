@@ -210,7 +210,7 @@ func runImageDryRun(ctx context.Context, image, network, config string) ([]byte,
 	for _, value := range cliEnv() {
 		args = append(args, "--env", value)
 	}
-	args = append(args, image, "--config", "/config.yml")
+	args = append(args, "--env", "ARRTIFY_CONFIG_FILE=/config.yml", image)
 	return runDockerCLI(ctx, args...)
 }
 

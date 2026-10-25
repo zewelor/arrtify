@@ -422,6 +422,88 @@ func TestCLI(t *testing.T) {
 	}
 }
 
+func TestConfigFileSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, env              string
+		setEnv, invalidDefault bool
+		args                   []string
+		exit, scanned          int
+	}{
+		{name: "default file", args: []string{"--check"}},
+		{name: "environment file", setEnv: true, env: "custom config.yml", invalidDefault: true, args: []string{"--check"}},
+		{name: "environment dry-run", setEnv: true, env: "custom config.yml", invalidDefault: true, scanned: 6},
+		{name: "missing environment file", setEnv: true, env: "path-secret-canary.yml", args: []string{"--check"}, exit: 2},
+		{name: "invalid environment file", setEnv: true, env: "invalid.yml", args: []string{"--check"}, exit: 2},
+		{name: "empty environment path", setEnv: true, args: []string{"--check"}, exit: 2},
+		{name: "flag overrides environment", setEnv: true, env: "invalid.yml", args: []string{"--config", "config.yml", "--check"}},
+		{name: "flag overrides empty environment", setEnv: true, args: []string{"--config", "config.yml", "--check"}},
+		{name: "explicit empty flag is invalid", setEnv: true, env: "custom config.yml", args: []string{"--config", "", "--check"}, exit: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := &apiFixture{}
+			result := recordScenario(t, tc.name, fixture)
+			server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+			defer server.Close()
+			dir := t.TempDir()
+			for _, file := range []struct {
+				name    string
+				invalid bool
+			}{
+				{name: "config.yml", invalid: tc.invalidDefault},
+				{name: "custom config.yml"},
+				{name: "invalid.yml", invalid: true},
+			} {
+				data, err := os.ReadFile(configFile(t, server.URL, file.invalid))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, file.name), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binary, tc.args...)
+			cmd.Dir = dir
+			cmd.Env = cliEnv()
+			if tc.setEnv {
+				path := tc.env
+				if path != "" {
+					path = filepath.Join(dir, path)
+				}
+				cmd.Env = append(cmd.Env, "ARRTIFY_CONFIG_FILE="+path)
+			}
+			var out, logs bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &logs
+			code := 0
+			if err := cmd.Run(); err != nil {
+				if exit, ok := err.(*exec.ExitError); ok {
+					code = exit.ExitCode()
+				} else {
+					t.Fatal(err)
+				}
+			}
+			result.Exit = code
+			result.Report = verifyOutput(t, out.Bytes(), logs.Bytes(), code)
+			if code != tc.exit || result.Report.Scanned != tc.scanned {
+				t.Fatalf("exit %d, report %+v", code, result.Report)
+			}
+			if bytes.Contains(out.Bytes(), []byte("path-secret-canary")) || bytes.Contains(logs.Bytes(), []byte("path-secret-canary")) {
+				t.Fatal("configuration path leaked")
+			}
+			if tc.scanned == 0 && fixture.requests.Load() != 0 {
+				t.Fatal("configuration check made network requests")
+			}
+			if tc.scanned != 0 && (result.Report.WouldDelete != 2 || fixture.requests.Load() == 0) {
+				t.Fatal("environment-selected dry-run did not evaluate the synthetic APIs")
+			}
+			if fixture.mutations.Load() != 0 {
+				t.Fatal("configuration selection sent mutation")
+			}
+		})
+	}
+}
+
 func TestCancellation(t *testing.T) {
 	fixture := &apiFixture{started: make(chan struct{})}
 	result := recordScenario(t, "SIGTERM during read", fixture)

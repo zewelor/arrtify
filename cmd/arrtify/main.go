@@ -25,7 +25,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	started := time.Now()
 	flags := flag.NewFlagSet("arrtify", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	configPath := flags.String("config", "config.yml", "path to YAML configuration")
+	defaultConfigPath := "config.yml"
+	if path, set := os.LookupEnv("ARRTIFY_CONFIG_FILE"); set {
+		defaultConfigPath = path
+	}
+	configPath := flags.String("config", defaultConfigPath, "path to YAML configuration (ARRTIFY_CONFIG_FILE)")
 	check := flags.Bool("check", false, "validate configuration and required environment without network access")
 	apply := flags.Bool("apply", false, "reserved for the later apply stage (currently rejected)")
 	showHelp := func() {

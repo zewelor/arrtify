@@ -25,6 +25,17 @@ bin/arrtify --config config.yml --check
 bin/arrtify --config config.yml
 ```
 
+The configuration file is selected in this order: explicit `--config`,
+`ARRTIFY_CONFIG_FILE`, then `config.yml` in the working directory. For example:
+
+```sh
+ARRTIFY_CONFIG_FILE=/config/config.yml bin/arrtify --check
+```
+
+An empty, missing or invalid selected file is an error; it does not fall back to
+another file. An explicit flag takes precedence even when the environment value
+is invalid. Relative paths are resolved from the working directory.
+
 `--check` validates YAML and required environment without network access. Ordinary
 execution reads the configured APIs. stdout contains one final JSON report;
 stderr contains JSON events with the same `run_id`, mode, and build version.
