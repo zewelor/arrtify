@@ -1,0 +1,23 @@
+transmission:
+  url: http://transmission.example.invalid:9091/transmission/rpc
+sonarr:
+  url: http://sonarr.example.invalid:8989
+radarr:
+  url: http://radarr.example.invalid:7878
+ignore_trackers:
+  - tracker.example.invalid
+rules:
+  - name: sonarr
+    categories: [sonarr, sonarr-imported]
+    ratio: 2
+    min_seed_time: 24h
+  - name: unlinked
+    categories: [unlinked]
+    ratio: 2
+    min_seed_time: 24h
+    max_seed_time: 72h
+  - name: radarr
+    categories: [radarr, radarr-imported]
+    ratio: 2
+    min_seed_time: 24h
+    max_seed_time: 168h

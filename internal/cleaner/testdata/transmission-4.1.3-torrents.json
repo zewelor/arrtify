@@ -1,0 +1,36 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "torrents": [
+      {
+        "hash_string": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "name": "Synthetic B",
+        "download_dir": "/downloads/sonarr-imported/",
+        "upload_ratio": -1,
+        "seconds_seeding": 7,
+        "status": 5,
+        "is_finished": true,
+        "left_until_done": 0,
+        "metadata_percent_complete": 1,
+        "trackers": [
+          {"announce": "https://tracker.example.invalid/announce", "id": 1, "tier": 0}
+        ],
+        "future_field": "unknown fields are allowed"
+      },
+      {
+        "hash_string": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "Synthetic A",
+        "download_dir": "/downloads/radarr",
+        "upload_ratio": 2.5,
+        "seconds_seeding": 12,
+        "status": 6,
+        "is_finished": true,
+        "left_until_done": 0,
+        "metadata_percent_complete": 1,
+        "trackers": []
+      }
+    ]
+  },
+  "id": 2,
+  "future_envelope_field": true
+}
