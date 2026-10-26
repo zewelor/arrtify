@@ -142,10 +142,19 @@ type apiFixture struct {
 	belowThresholds                bool
 	started                        chan struct{}
 	syncTrackerLabels              bool
+	failLabelReadback              bool
+	labelWriteSeen                 bool
+	allowTorrentRemove             bool
+	eligibleF                      bool
+	uncertainRemoveHash            string
+	protectHashOnRevalidation      string
+	deletedHashes                  map[string]bool
 	ignoredTrackerHashes           map[string]bool
 	labels                         map[string][]string
+	sonarrReads                    atomic.Int64
 	rpcMu                          sync.Mutex
 	rpcCalls                       []rpcCall
+	trace                          []string
 }
 
 func recordScenario(t *testing.T, name string, fixture *apiFixture) *scenarioResult {
@@ -177,7 +186,7 @@ func (f *apiFixture) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad request", 400)
 			return
 		}
-		if req.Method != "session_get" && req.Method != "torrent_get" && !(f.syncTrackerLabels && req.Method == "torrent_set") {
+		if req.Method != "session_get" && req.Method != "torrent_get" && !(f.syncTrackerLabels && req.Method == "torrent_set") && !(f.allowTorrentRemove && req.Method == "torrent_remove") {
 			f.mutations.Add(1)
 			http.Error(w, "unexpected mutation", 500)
 			return
@@ -201,18 +210,38 @@ func (f *apiFixture) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			result = map[string]any{"version": version, "rpc_version_semver": "6.0.1"}
 		} else if req.Method == "torrent_get" {
+			f.recordTrace("rpc:torrent_get:" + targetHash(req.Params))
 			torrents, err := f.torrents(req.Params)
 			if err != nil {
 				http.Error(w, "invalid torrent_get arguments", 400)
 				return
 			}
 			result = map[string]any{"torrents": torrents}
-		} else {
+		} else if req.Method == "torrent_set" {
 			if err := f.setLabels(req.Params); err != nil {
 				http.Error(w, "invalid torrent_set arguments", 400)
 				return
 			}
 			f.mutations.Add(1)
+			result = map[string]any{}
+		} else {
+			hash, err := f.removeTorrent(req.Params)
+			if err != nil {
+				http.Error(w, "invalid torrent_remove arguments", 400)
+				return
+			}
+			f.recordTrace("rpc:torrent_remove:" + hash)
+			f.mutations.Add(1)
+			f.rpcMu.Lock()
+			if f.deletedHashes == nil {
+				f.deletedHashes = map[string]bool{}
+			}
+			f.deletedHashes[hash] = true
+			f.rpcMu.Unlock()
+			if hash == f.uncertainRemoveHash {
+				http.Error(w, "transmission response was interrupted", http.StatusBadGateway)
+				return
+			}
 			result = map[string]any{}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
@@ -222,6 +251,8 @@ func (f *apiFixture) serve(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/sonarr/") {
 		service = "sonarr"
 	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	f.recordTrace(fmt.Sprintf("arr:%s:%d", service, page))
 	if f.failService == service {
 		http.Error(w, "api-secret-canary", 403)
 		return
@@ -238,15 +269,20 @@ func (f *apiFixture) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown items missing", 400)
 		return
 	}
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	records := []any{}
 	total := 1
 	if service == "sonarr" {
+		protectHash := ""
+		if f.sonarrReads.Add(1) > 2 {
+			protectHash = f.protectHashOnRevalidation
+		}
 		total = 101
 		if page == 1 {
 			for i := 1; i <= 100; i++ {
 				var hash any
-				if i%2 == 0 {
+				if i == 1 && protectHash != "" {
+					hash = protectHash
+				} else if i%2 == 0 {
 					hash = ""
 				}
 				records = append(records, map[string]any{"id": i, "downloadId": hash, "status": "warning"})
@@ -272,6 +308,42 @@ func (f *apiFixture) rpcCallSnapshot() []rpcCall {
 	return append([]rpcCall(nil), f.rpcCalls...)
 }
 
+func (f *apiFixture) recordTrace(event string) {
+	f.rpcMu.Lock()
+	defer f.rpcMu.Unlock()
+	f.trace = append(f.trace, event)
+}
+
+func (f *apiFixture) traceSnapshot() []string {
+	f.rpcMu.Lock()
+	defer f.rpcMu.Unlock()
+	return append([]string(nil), f.trace...)
+}
+
+func targetHash(params map[string]json.RawMessage) string {
+	var ids []string
+	if err := json.Unmarshal(params["ids"], &ids); err != nil || len(ids) == 0 {
+		return "*"
+	}
+	return ids[0]
+}
+
+func (f *apiFixture) removeTorrent(params map[string]json.RawMessage) (string, error) {
+	var ids []string
+	if err := json.Unmarshal(params["ids"], &ids); err != nil || len(ids) != 1 {
+		return "", fmt.Errorf("torrent_remove must target one hash")
+	}
+	var deleteLocalData bool
+	if err := json.Unmarshal(params["delete_local_data"], &deleteLocalData); err != nil || !deleteLocalData {
+		return "", fmt.Errorf("torrent_remove must delete local data")
+	}
+	hash := ids[0]
+	if len(hash) != 40 || hash != strings.ToLower(hash) {
+		return "", fmt.Errorf("torrent_remove hash is not canonical")
+	}
+	return hash, nil
+}
+
 func (f *apiFixture) torrents(arguments map[string]json.RawMessage) ([]map[string]any, error) {
 	var fields []string
 	if err := json.Unmarshal(arguments["fields"], &fields); err != nil || !containsString(fields, "labels") {
@@ -283,10 +355,16 @@ func (f *apiFixture) torrents(arguments map[string]json.RawMessage) ([]map[strin
 			return nil, fmt.Errorf("invalid ids")
 		}
 	}
-	var torrents []map[string]any
+	torrents := []map[string]any{}
 	for _, c := range []byte{'a', 'b', 'c', 'd', 'e', 'f'} {
 		hash := strings.Repeat(string(c), 40)
 		if len(ids) > 0 && !containsString(ids, hash) {
+			continue
+		}
+		f.rpcMu.Lock()
+		deleted := f.deletedHashes[hash]
+		f.rpcMu.Unlock()
+		if deleted {
 			continue
 		}
 		trackerList := []any{}
@@ -294,6 +372,12 @@ func (f *apiFixture) torrents(arguments map[string]json.RawMessage) ([]map[strin
 			trackerList = []any{map[string]any{"announce": "udp://announce.tracker.example.invalid:80/path?passkey=tracker-secret-canary"}}
 		}
 		labels := f.currentLabels(hash)
+		f.rpcMu.Lock()
+		readbackMismatch := f.failLabelReadback && f.labelWriteSeen && len(ids) == 1 && ids[0] == hash
+		f.rpcMu.Unlock()
+		if readbackMismatch {
+			labels = []string{}
+		}
 		tr := map[string]any{
 			"hash_string": hash, "name": "Synthetic " + string(c), "download_dir": "/downloads/sonarr",
 			"upload_ratio": 2, "seconds_seeding": 24 * 3600, "status": 6, "is_finished": false,
@@ -305,7 +389,9 @@ func (f *apiFixture) torrents(arguments map[string]json.RawMessage) ([]map[strin
 			tr["upload_ratio"] = -2
 			tr["seconds_seeding"] = 168 * 3600
 		case 'f':
-			tr["status"] = 0
+			if !f.eligibleF {
+				tr["status"] = 0
+			}
 		}
 		if f.belowThresholds && c == 'a' {
 			tr["download_dir"] = "/downloads/unlinked"
@@ -348,7 +434,11 @@ func (f *apiFixture) setLabels(arguments map[string]json.RawMessage) error {
 		return fmt.Errorf("torrent_set hash is unknown")
 	}
 	f.rpcMu.Lock()
+	if f.labels == nil {
+		f.labels = map[string][]string{}
+	}
 	f.labels[ids[0]] = append([]string{}, labels...)
+	f.labelWriteSeen = true
 	f.rpcMu.Unlock()
 	return nil
 }
@@ -384,6 +474,21 @@ func configFile(t *testing.T, url string, invalid bool) string {
 	return file
 }
 
+func configFileWithoutCleanupCandidates(t *testing.T, url string) string {
+	t.Helper()
+	file := configFile(t, url, false)
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := strings.ReplaceAll(string(data), "ratio: 2", "ratio: 9999")
+	config = strings.Replace(config, "max_seed_time: 168h", "max_seed_time: 336h", 1)
+	if err := os.WriteFile(file, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
 func verifyOutput(t *testing.T, out, logs []byte, code int) cleaner.RunReport {
 	t.Helper()
 	for _, secret := range []string{"user-secret-canary", "password-secret-canary", "api-secret-canary", "tracker-secret-canary", "config-secret-canary"} {
@@ -408,7 +513,7 @@ func verifyOutput(t *testing.T, out, logs []byte, code int) cleaner.RunReport {
 	if report.Scanned != report.Skipped+report.WouldDelete+report.Removed+report.Failed+report.Unknown+report.NotAttempted {
 		t.Fatalf("unbalanced outcomes: %+v", report)
 	}
-	if len(report.Decisions) != report.Scanned || report.Attempted != 0 || report.Removed != 0 || report.Unknown != 0 {
+	if len(report.Decisions) != report.Scanned || (report.Mode == "dry-run" && (report.Attempted != 0 || report.Removed != 0 || report.Unknown != 0)) {
 		t.Fatalf("unexpected decisions/mutations: %+v", report)
 	}
 	expected := map[string]map[string]any{}
@@ -540,6 +645,254 @@ func TestCLI(t *testing.T) {
 	}
 }
 
+func TestApplyStopsAfterUncertainRemoval(t *testing.T) {
+	fixture := &apiFixture{
+		allowTorrentRemove:  true,
+		eligibleF:           true,
+		uncertainRemoveHash: hashFor('e'),
+	}
+	report, _, logs, code := runApplyScenario(t, "apply stops after uncertain removal", fixture, false)
+	if code != 1 || report.Mode != "apply" || report.DryRun || report.SyncTrackerLabel || report.Status != "partial" || report.Errors != 1 {
+		t.Fatalf("exit=%d report=%+v\n%s", code, report, logs)
+	}
+	if report.Scanned != 6 || report.Planned != 3 || report.WouldDelete != 0 || report.Attempted != 2 || report.Skipped != 3 || report.Removed != 1 || report.Failed != 0 || report.Unknown != 1 || report.NotAttempted != 1 {
+		t.Fatalf("unexpected partial-apply counters: %+v", report)
+	}
+	assertReportOutcomes(t, report, map[string]string{
+		hashFor('a'): "removed",
+		hashFor('b'): "skipped",
+		hashFor('c'): "skipped",
+		hashFor('d'): "skipped",
+		hashFor('e'): "unknown",
+		hashFor('f'): "not_attempted",
+	})
+	assertLoggedOutcomes(t, logs, map[string]string{
+		hashFor('a'): "removed",
+		hashFor('b'): "skipped",
+		hashFor('c'): "skipped",
+		hashFor('d'): "skipped",
+		hashFor('e'): "unknown",
+		hashFor('f'): "not_attempted",
+	})
+	assertRemovalCalls(t, fixture.rpcCallSnapshot(), []string{hashFor('a'), hashFor('e')})
+	assertPartialApplyTrace(t, fixture.traceSnapshot())
+	if fixture.mutations.Load() != 2 {
+		t.Fatalf("got %d mutation requests, want the confirmed and uncertain remove only", fixture.mutations.Load())
+	}
+	fixture.rpcMu.Lock()
+	deletedA, deletedE, deletedF := fixture.deletedHashes[hashFor('a')], fixture.deletedHashes[hashFor('e')], fixture.deletedHashes[hashFor('f')]
+	fixture.rpcMu.Unlock()
+	if !deletedA || !deletedE || deletedF {
+		t.Fatalf("fixture effects after partial apply: a=%t e=%t f=%t", deletedA, deletedE, deletedF)
+	}
+}
+
+func TestApplyRemovesPlannedCandidates(t *testing.T) {
+	fixture := &apiFixture{allowTorrentRemove: true, eligibleF: true}
+	report, _, logs, code := runApplyScenario(t, "apply removes planned candidates", fixture, false)
+	if code != 0 || report.Mode != "apply" || report.DryRun || report.SyncTrackerLabel || report.Status != "complete" || report.Errors != 0 {
+		t.Fatalf("exit=%d report=%+v\n%s", code, report, logs)
+	}
+	if report.Scanned != 6 || report.Planned != 3 || report.WouldDelete != 0 || report.Attempted != 3 || report.Skipped != 3 || report.Removed != 3 || report.Failed != 0 || report.Unknown != 0 || report.NotAttempted != 0 {
+		t.Fatalf("unexpected apply counters: %+v", report)
+	}
+	assertRemovalCalls(t, fixture.rpcCallSnapshot(), []string{hashFor('a'), hashFor('e'), hashFor('f')})
+	if fixture.mutations.Load() != 3 {
+		t.Fatalf("got %d mutation requests, want three confirmed removals", fixture.mutations.Load())
+	}
+}
+
+func TestApplySkipsCandidateProtectedDuringRevalidation(t *testing.T) {
+	fixture := &apiFixture{
+		allowTorrentRemove:        true,
+		protectHashOnRevalidation: hashFor('a'),
+	}
+	report, out, logs, code := runApplyScenario(t, "apply skips candidate protected during revalidation", fixture, false)
+	if code != 0 || report.Mode != "apply" || report.DryRun || report.Status != "complete" || report.Errors != 0 {
+		t.Fatalf("exit=%d report=%+v\n%s", code, report, logs)
+	}
+	if report.Scanned != 6 || report.Planned != 2 || report.WouldDelete != 0 || report.Attempted != 1 || report.Skipped != 5 || report.Removed != 1 || report.Failed != 0 || report.Unknown != 0 || report.NotAttempted != 0 {
+		t.Fatalf("unexpected revalidation counters: %+v", report)
+	}
+	payload := decodeReportPayload(t, out)
+	if decision := torrentDecision(t, payload, hashFor('a')); decision["reason"] != "arr_queue" || decision["outcome"] != "skipped" {
+		t.Fatalf("candidate protected by a refreshed queue: %v", decision)
+	}
+	if decision := torrentDecision(t, payload, hashFor('e')); decision["outcome"] != "removed" {
+		t.Fatalf("remaining candidate was not removed: %v", decision)
+	}
+	assertRemovalCalls(t, fixture.rpcCallSnapshot(), []string{hashFor('e')})
+	if fixture.mutations.Load() != 1 {
+		t.Fatalf("got %d mutation requests, want only the unprotected candidate", fixture.mutations.Load())
+	}
+}
+
+func TestApplyInitialArrFailurePreventsRemoval(t *testing.T) {
+	fixture := &apiFixture{allowTorrentRemove: true, eligibleF: true, failService: "sonarr"}
+	report, _, logs, code := runApplyScenario(t, "apply initial Arr failure prevents removal", fixture, false)
+	if code != 1 || report.Mode != "apply" || report.DryRun || report.Status != "failed" || report.Errors != 1 || report.Scanned != 6 || report.Planned != 0 || report.Attempted != 0 || report.WouldDelete != 0 || report.Skipped != 0 || report.Removed != 0 || report.Failed != 0 || report.Unknown != 0 || report.NotAttempted != 6 {
+		t.Fatalf("exit=%d report=%+v\n%s", code, report, logs)
+	}
+	assertRemovalCalls(t, fixture.rpcCallSnapshot(), []string{})
+	if fixture.mutations.Load() != 0 {
+		t.Fatalf("initial Arr failure allowed removals: mutations=%d calls=%v", fixture.mutations.Load(), fixture.rpcCallSnapshot())
+	}
+}
+
+func TestLabelReadbackFailureBlocksCleanup(t *testing.T) {
+	fixture := &apiFixture{
+		syncTrackerLabels:  true,
+		failLabelReadback:  true,
+		allowTorrentRemove: true,
+	}
+	report, out, logs, code := runApplyScenario(t, "label readback failure blocks cleanup", fixture, true)
+	if code != 1 || report.Mode != "apply" || report.DryRun || !report.SyncTrackerLabel || report.Status != "partial" || report.Errors != 1 {
+		t.Fatalf("exit=%d report=%+v\n%s", code, report, logs)
+	}
+	if report.Scanned != 6 || report.Planned != 2 || report.Attempted != 0 || report.Skipped != 4 || report.WouldDelete != 0 || report.Removed != 0 || report.Failed != 0 || report.Unknown != 0 || report.NotAttempted != 2 || report.TrackerLabelsPlanned != 1 || report.TrackerLabelsChanged != 0 {
+		t.Fatalf("label failure did not block planned cleanup: %+v", report)
+	}
+	assertTrackerLabelDecision(t, trackerLabelDecision(t, decodeReportPayload(t, out), hashFor('d')), true, "add", "unknown")
+	if !bytes.Contains(logs, []byte(`"event":"tracker_label_failed"`)) || bytes.Contains(logs, []byte(`"event":"delete_requested"`)) {
+		t.Fatalf("logs do not show label failure blocking removals:\n%s", logs)
+	}
+	assertTorrentLabelMutations(t, fixture.rpcCallSnapshot(), map[string][]string{hashFor('d'): {"arrtify:ignored-tracker"}})
+	assertRemovalCalls(t, fixture.rpcCallSnapshot(), []string{})
+	if fixture.mutations.Load() != 1 {
+		t.Fatalf("got %d mutation requests, want only the failed-confirmation label write", fixture.mutations.Load())
+	}
+}
+
+func TestLabelOutcomeSurvivesUncertainCleanup(t *testing.T) {
+	const managedLabel = "arrtify:ignored-tracker"
+	hashA := hashFor('a')
+	fixture := &apiFixture{
+		syncTrackerLabels:   true,
+		allowTorrentRemove:  true,
+		uncertainRemoveHash: hashA,
+		labels: map[string][]string{
+			hashA:        {"user:keep", managedLabel},
+			hashFor('d'): {managedLabel},
+		},
+	}
+	report, out, logs, code := runApplyScenario(t, "label outcome survives uncertain cleanup", fixture, true)
+	if code != 1 || report.Mode != "apply" || report.Status != "partial" || report.Errors != 1 || !report.SyncTrackerLabel {
+		t.Fatalf("exit=%d report=%+v\n%s", code, report, logs)
+	}
+	if report.Planned != 2 || report.Attempted != 1 || report.Skipped != 4 || report.Removed != 0 || report.Unknown != 1 || report.NotAttempted != 1 || report.TrackerLabelsChanged != 1 {
+		t.Fatalf("unexpected cross-phase counters: %+v", report)
+	}
+	decision := torrentDecision(t, decodeReportPayload(t, out), hashA)
+	if decision["outcome"] != "unknown" {
+		t.Fatalf("uncertain cleanup outcome: %v", decision)
+	}
+	assertTrackerLabelDecision(t, decision["tracker_label"].(map[string]any), false, "remove", "removed")
+	if torrentDecision(t, decodeReportPayload(t, out), hashFor('e'))["outcome"] != "not_attempted" {
+		t.Fatal("remaining cleanup candidate was not marked not_attempted")
+	}
+	fixture.rpcMu.Lock()
+	remainingLabels := append([]string{}, fixture.labels[hashA]...)
+	fixture.rpcMu.Unlock()
+	if !sameStrings(remainingLabels, []string{"user:keep"}) {
+		t.Fatalf("managed-label removal lost or changed the foreign label: %v", remainingLabels)
+	}
+	assertRemovalCalls(t, fixture.rpcCallSnapshot(), []string{hashA})
+	if fixture.mutations.Load() != 2 {
+		t.Fatalf("got %d mutations, want one label write and one uncertain remove", fixture.mutations.Load())
+	}
+}
+
+func assertReportOutcomes(t *testing.T, report cleaner.RunReport, want map[string]string) {
+	t.Helper()
+	got := make(map[string]string, len(report.Decisions))
+	for _, decision := range report.Decisions {
+		got[decision.Hash] = decision.Outcome
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("report outcomes: got %v, want %v", got, want)
+	}
+}
+
+func assertLoggedOutcomes(t *testing.T, logs []byte, want map[string]string) {
+	t.Helper()
+	got := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(logs)), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("invalid structured log: %v\n%s", err, logs)
+		}
+		if event["event"] == "torrent_decision" {
+			hash, _ := event["torrent_hash"].(string)
+			outcome, _ := event["outcome"].(string)
+			got[hash] = outcome
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("logged outcomes: got %v, want %v\n%s", got, want, logs)
+	}
+}
+
+func assertRemovalCalls(t *testing.T, calls []rpcCall, wantHashes []string) {
+	t.Helper()
+	got := removalHashes(t, calls)
+	if !reflect.DeepEqual(got, wantHashes) {
+		t.Fatalf("torrent_remove requests: got %v, want %v", got, wantHashes)
+	}
+}
+
+func removalHashes(t *testing.T, calls []rpcCall) []string {
+	t.Helper()
+	got := []string{}
+	for _, call := range calls {
+		if call.Method != "torrent_remove" {
+			continue
+		}
+		ids := stringArgument(t, call.Params, "ids")
+		if len(ids) != 1 || len(ids[0]) != 40 || ids[0] != strings.ToLower(ids[0]) {
+			t.Fatalf("torrent_remove ids must contain one canonical hash: %v", ids)
+		}
+		var deleteLocalData bool
+		if err := json.Unmarshal(call.Params["delete_local_data"], &deleteLocalData); err != nil || !deleteLocalData {
+			t.Fatalf("torrent_remove for %s must set delete_local_data=true", ids[0])
+		}
+		got = append(got, ids[0])
+	}
+	return got
+}
+
+func assertPartialApplyTrace(t *testing.T, trace []string) {
+	t.Helper()
+	plan := traceIndex(trace, 0, "rpc:torrent_get:*")
+	firstRefresh := traceIndex(trace, plan+1, "rpc:torrent_get:"+hashFor('a'))
+	firstRemove := traceIndex(trace, firstRefresh+1, "rpc:torrent_remove:"+hashFor('a'))
+	firstReadback := traceIndex(trace, firstRemove+1, "rpc:torrent_get:"+hashFor('a'))
+	secondRefresh := traceIndex(trace, firstReadback+1, "rpc:torrent_get:"+hashFor('e'))
+	secondRemove := traceIndex(trace, secondRefresh+1, "rpc:torrent_remove:"+hashFor('e'))
+	if plan < 0 || firstRefresh < 0 || firstRemove < 0 || firstReadback < 0 || secondRefresh < 0 || secondRemove < 0 {
+		t.Fatalf("partial apply did not plan, confirm the first remove, and stop after the uncertain second: %v", trace)
+	}
+	if !hasCompleteQueueRead(trace[plan+1:firstRefresh]) || !hasCompleteQueueRead(trace[firstRefresh+1:firstRemove]) || !hasCompleteQueueRead(trace[secondRefresh+1:secondRemove]) {
+		t.Fatalf("initial plan or per-candidate Arr revalidation was incomplete: %v", trace)
+	}
+}
+
+func traceIndex(trace []string, start int, want string) int {
+	for i := max(start, 0); i < len(trace); i++ {
+		if trace[i] == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasCompleteQueueRead(trace []string) bool {
+	seen := map[string]bool{}
+	for _, event := range trace {
+		seen[event] = true
+	}
+	return seen["arr:sonarr:1"] && seen["arr:sonarr:2"] && seen["arr:radarr:1"]
+}
+
 func TestTrackerLabelDryRun(t *testing.T) {
 	for _, omitted := range []bool{false, true} {
 		t.Run(map[bool]string{false: "explicit false", true: "omitted"}[omitted], func(t *testing.T) {
@@ -627,7 +980,7 @@ func TestTrackerLabelSync(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
 	defer server.Close()
-	config := configFile(t, server.URL, false)
+	config := configFileWithoutCleanupCandidates(t, server.URL)
 	data, err := os.ReadFile(config)
 	if err != nil {
 		t.Fatal(err)
@@ -648,7 +1001,7 @@ func TestTrackerLabelSync(t *testing.T) {
 		if reportCount(t, payload, "tracker_labels_planned") != 4 || reportCount(t, payload, "tracker_labels_changed") != 4 {
 			t.Fatalf("sync tracker label counters: %v", payload)
 		}
-		if result.Report.Scanned != 6 || result.Report.WouldDelete != 2 || result.Report.Removed != 0 || result.Report.Attempted != 0 {
+		if result.Report.Scanned != 6 || result.Report.WouldDelete != 0 || result.Report.Removed != 0 || result.Report.Attempted != 0 {
 			t.Fatalf("label sync changed cleanup counters: %+v", result.Report)
 		}
 		assertTrackerLabelDecision(t, trackerLabelDecision(t, payload, hashA), false, "remove", "removed")
@@ -790,6 +1143,27 @@ func runCLIWithConfigEnv(t *testing.T, config string, env []string, args ...stri
 		}
 	}
 	return out.Bytes(), logs.Bytes(), code
+}
+
+func runApplyScenario(t *testing.T, name string, fixture *apiFixture, syncLabels bool) (cleaner.RunReport, []byte, []byte, int) {
+	t.Helper()
+	result := recordScenario(t, name, fixture)
+	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+	defer server.Close()
+	config := configFile(t, server.URL, false)
+	if syncLabels {
+		data, err := os.ReadFile(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, logs, code := runCLIWithConfigEnv(t, config, []string{"ARRTIFY_DRY_RUN=false"})
+	result.Exit = code
+	result.Report = verifyOutput(t, out, logs, code)
+	return result.Report, out, logs, code
 }
 
 func decodeReportPayload(t *testing.T, output []byte) map[string]any {

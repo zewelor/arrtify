@@ -43,6 +43,7 @@ fuzz:
     go test ./internal/cleaner -run '^$' -fuzz '^FuzzConfig$' -fuzztime 5s -parallel 2
     go test ./internal/cleaner -run '^$' -fuzz '^FuzzCategory$' -fuzztime 5s -parallel 2
     go test ./internal/cleaner -run '^$' -fuzz '^FuzzHostname$' -fuzztime 5s -parallel 2
+    go test ./internal/cleaner -run '^$' -fuzz '^FuzzRemoveTarget$' -fuzztime 5s -parallel 2
 
 # Both source and container checks use only synthetic local API data.
 ci: fmt-check vet test fuzz vuln build container-test

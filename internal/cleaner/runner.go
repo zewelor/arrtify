@@ -2,10 +2,11 @@ package cleaner
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 )
 
-// Run reads all three sources and plans every decision before optional label writes.
+// Run plans all decisions before writes, then applies labels and cleanup in order.
 func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
 	report := RunReport{
 		Mode:             c.RunMode(),
@@ -66,7 +67,14 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
 		return fail("run", err)
 	}
 	report.Decisions = decisions
-	for _, d := range decisions {
+	for i := range report.Decisions {
+		d := &report.Decisions[i]
+		if d.Outcome == "would_delete" {
+			report.Planned++
+			if !c.IsDryRun() {
+				d.Outcome, d.Reason = "not_attempted", "aborted"
+			}
+		}
 		if d.TrackerLabel.Action != "none" {
 			report.TrackerLabelsPlanned++
 		}
@@ -74,17 +82,114 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
 	if c.ShouldSyncTrackerLabel() {
 		syncTrackerLabels(ctx, rpc, c.IgnoreTrackers, &report, logger)
 	}
-	for _, d := range decisions {
+	if !c.IsDryRun() && report.Errors == 0 {
+		applyCleanup(ctx, rpc, c, &report, logger)
+	}
+	for _, d := range report.Decisions {
 		switch d.Outcome {
 		case "would_delete":
-			report.Planned++
 			report.WouldDelete++
 		case "skipped":
 			report.Skipped++
+		case "removed":
+			report.Removed++
+		case "failed":
+			report.Failed++
+		case "unknown":
+			report.Unknown++
+		case "not_attempted":
+			report.NotAttempted++
 		}
 		logDecision(logger, d)
 	}
 	return report
+}
+
+func applyCleanup(ctx context.Context, rpc *transmissionRPC, c Config, report *RunReport, logger *slog.Logger) {
+	for i := range report.Decisions {
+		d := &report.Decisions[i]
+		if d.Outcome != "not_attempted" {
+			continue
+		}
+		d.Outcome, d.Reason = "failed", "revalidation_failed"
+		fresh, err := rpc.torrent(ctx, d.Hash)
+		if err != nil {
+			cleanupFailure(report, d, logger, err)
+			return
+		}
+		if fresh == nil {
+			d.Outcome, d.Reason = "skipped", "torrent_missing"
+			continue
+		}
+		sonarr, err := ReadQueue(ctx, c.Sonarr, c.Credentials.SonarrKey, "sonarr")
+		if err != nil {
+			cleanupFailure(report, d, logger, err)
+			return
+		}
+		radarr, err := ReadQueue(ctx, c.Radarr, c.Credentials.RadarrKey, "radarr")
+		if err != nil {
+			cleanupFailure(report, d, logger, err)
+			return
+		}
+		decision, err := Evaluate(c, *fresh, sonarr[d.Hash] || radarr[d.Hash])
+		if err != nil {
+			cleanupFailure(report, d, logger, err)
+			return
+		}
+		if decision.Category != d.Category && decision.Outcome == "would_delete" {
+			decision.Outcome, decision.Reason = "skipped", "category_changed"
+		}
+		decision.TrackerLabel = d.TrackerLabel
+		*d = decision
+		if d.Outcome != "would_delete" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			d.Outcome, d.Reason = "failed", "cancelled"
+			cleanupFailure(report, d, logger, err)
+			return
+		}
+		logger.Info("torrent removal requested", "event", "delete_requested", "torrent_hash", d.Hash, "rule", d.Rule)
+		report.Attempted++
+		if err := rpc.remove(ctx, d.Hash); err != nil {
+			d.Outcome, d.Reason = "unknown", "operation_unknown"
+			if errors.Is(err, errRPCRejected) {
+				d.Outcome, d.Reason = "failed", "remove_rejected"
+			}
+			cleanupFailure(report, d, logger, err)
+			return
+		}
+		confirmed, err := rpc.torrent(ctx, d.Hash)
+		if err == nil && confirmed != nil {
+			err = errors.New("transmission: removed torrent is still present")
+		}
+		if err != nil {
+			d.Outcome, d.Reason = "unknown", "operation_unknown"
+			cleanupFailure(report, d, logger, err)
+			return
+		}
+		d.Outcome = "removed"
+		logger.Info("torrent removed", "event", "torrent_removed", "torrent_hash", d.Hash, "rule", d.Rule)
+	}
+}
+
+func cleanupFailure(report *RunReport, d *Decision, logger *slog.Logger, err error) {
+	report.Errors++
+	report.Status = "failed"
+	if report.TrackerLabelsChanged > 0 {
+		report.Status = "partial"
+	}
+	for _, decision := range report.Decisions {
+		if decision.Outcome == "removed" || decision.Outcome == "unknown" {
+			report.Status = "partial"
+			break
+		}
+	}
+	event := "cleanup_failed"
+	if d.Outcome == "unknown" {
+		event = "operation_unknown"
+	}
+	logger.Error("torrent cleanup failed", "event", event, "torrent_hash", d.Hash, "outcome", d.Outcome, "error", err)
 }
 
 func logDecision(logger *slog.Logger, d Decision) {

@@ -1,6 +1,6 @@
 # Manual Transmission lab
 
-Run from the repository root with local rootless Docker. The script uses a pinned
+Run from the repository root with local rootless Docker, Go, just and jq. The script uses a pinned
 Transmission 4.1.3 image, bind-mounts only `artifacts/transmission-lab/{config,downloads}`
 and exposes RPC at `127.0.0.1:19091`. Namespace UID 0 maps to the invoking host
 user, so temporary files stay user-owned. AppArmor uses its existing allowed
@@ -59,8 +59,8 @@ ARRTIFY_DRY_RUN=true TRANSMISSION_USER=test TRANSMISSION_PASSWORD=test \
 The completed torrent should have outcome `would_delete`; data stays present.
 The Arr services here are synthetic, and all credentials above are fixture values.
 Protection, pagination, invalid reads and partial failures remain covered by
-`just e2e` and the existing HTTP/unit tests. Arrtify currently has no removal
-executor; the next section verifies Transmission's actual remove RPC separately.
+`just e2e` and the existing HTTP/unit tests. The next section enables the real
+Arrtify executor against this lab client.
 
 ## Remove data and verify the library hardlink
 
@@ -73,20 +73,25 @@ executor; the next section verifies Transmission's actual remove RPC separately.
     ln "$source" "$library"
     stat -c '%d:%i %h %n' "$source" "$library"
     sha256sum "$library" > "$lab/library.sha256"
-    bash scripts/transmission-lab.sh remote --torrent "$hash" --remove-and-delete
+    ARRTIFY_DRY_RUN=false TRANSMISSION_USER=test TRANSMISSION_PASSWORD=test \
+      SONARR_API_KEY=api-secret-canary RADARR_API_KEY=api-secret-canary \
+      bin/arrtify --config "$lab/arrtify.yml" > "$lab/apply.json"
     test ! -e "$source" || {
         echo "Download still exists: $source" >&2
         exit 1
     }
     sha256sum --check "$lab/library.sha256"
+    jq -e '.status == "complete" and .removed == 1 and .errors == 0' "$lab/apply.json"
 )
 ```
 
 The subshell stops on the first error without changing the interactive shell's
 options or allowing a later checksum to hide an earlier failure.
 Before removal both names must have the same device/inode; afterwards the download
-path must be absent and the library checksum must pass. `--remove` instead of
-`--remove-and-delete` exercises torrent-only removal and should retain the payload.
+path must be absent, the library checksum must pass, and the report must confirm
+one removal. The YAML rules remain identical between dry-run and apply; only the
+environment mode changes. These commands explicitly use the lab configuration
+and synthetic credentials.
 Use fresh test files for each case; an existing library link makes `ln` fail.
 This proves local filesystem behavior, not NAS/Storage Box behavior.
 

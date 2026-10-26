@@ -18,6 +18,8 @@ type transmissionSession struct {
 	RPCVersionSemver *string `json:"rpc_version_semver"`
 }
 
+var errRPCRejected = errors.New("rpc rejected before execution")
+
 type transmissionTracker struct {
 	Announce *string `json:"announce"`
 }
@@ -183,6 +185,22 @@ func decodeTransmissionRPC(body []byte, expectedID int, result any, method strin
 		return errors.New("transmission " + method + ": response id mismatch")
 	}
 	if len(envelope.Error) != 0 && !bytes.Equal(bytes.TrimSpace(envelope.Error), []byte("null")) {
+		// Only standard pre-dispatch errors prove that remove did not execute.
+		// Internal/application errors and conflicting envelopes remain uncertain.
+		if method == "torrent_remove" && len(envelope.Result) == 0 {
+			var rejection struct {
+				Code    *int    `json:"code"`
+				Message *string `json:"message"`
+			}
+			validError := json.Unmarshal(envelope.Error, &rejection) == nil
+			hasFields := rejection.Code != nil && rejection.Message != nil
+			if validError && hasFields {
+				switch *rejection.Code {
+				case -32600, -32601, -32602:
+					return fmt.Errorf("transmission %s: %w", method, errRPCRejected)
+				}
+			}
+		}
 		return errors.New("transmission " + method + ": RPC returned an error")
 	}
 	if len(envelope.Result) == 0 || bytes.Equal(bytes.TrimSpace(envelope.Result), []byte("null")) {
@@ -313,4 +331,16 @@ func (rpc *transmissionRPC) setLabels(ctx context.Context, hash string, labels [
 		IDs    []string `json:"ids"`
 		Labels []string `json:"labels"`
 	}{[]string{hash}, labels}, &result)
+}
+
+func (rpc *transmissionRPC) remove(ctx context.Context, hash string) error {
+	canonical, err := canonicalHash(hash)
+	if err != nil || canonical != hash {
+		return errors.New("transmission: invalid remove hash")
+	}
+	var result struct{}
+	return rpc.call(ctx, "torrent_remove", struct {
+		IDs             []string `json:"ids"`
+		DeleteLocalData bool     `json:"delete_local_data"`
+	}{IDs: []string{hash}, DeleteLocalData: true}, &result)
 }

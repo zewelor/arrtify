@@ -3,14 +3,13 @@
 Declarative cleanup for your Arr stack.
 
 Arrtify is a one-shot Go program that reads Transmission and the complete Sonarr
-and Radarr queues, evaluates ordered cleanup rules, and emits a JSON dry-run
-report.
+and Radarr queues, evaluates ordered cleanup rules, and emits a JSON report.
+It defaults to dry-run, with every state-changing API call blocked.
 
-Cleanup execution is not implemented: torrent/file removal remains **read-only**.
-The CLI has no `--apply` flag; execution is controlled by YAML. Dry-run is the
-default. Environment `ARRTIFY_DRY_RUN=true` blocks every state-changing API call,
-including labels. Actual label writes require both `ARRTIFY_DRY_RUN=false` and
-`sync_tracker_label: true`; torrent and file removal is not implemented.
+`ARRTIFY_DRY_RUN=false` enables removal of qualifying torrents and their data
+through Transmission. This also permits optional tracker-label writes when YAML
+`sync_tracker_label: true` is configured. There is no `--apply` flag or YAML
+`dry_run` setting; the environment is the sole execution-mode switch.
 
 ## Run
 
@@ -91,6 +90,40 @@ The example uses placeholder service addresses, an `.invalid` tracker hostname,
 and illustrative category rules. Replace them with your own service URLs and policy.
 Tests use only synthetic data and disposable local APIs.
 
+## Cleanup execution
+
+```sh
+ARRTIFY_DRY_RUN=false bin/arrtify --config config.yml
+```
+
+Apply first builds a complete plan, optionally synchronizes tracker labels, then
+processes the initial cleanup candidates sequentially. A label synchronization
+error prevents every removal. Before each remove, it refreshes that torrent and
+both complete Arr queues and reevaluates the same policy. A missing torrent,
+changed category, or newly failing guard is skipped. New candidates discovered
+during these reads wait for the next run.
+
+Each remove targets one stable hash and requests `delete_local_data: true`.
+`removed` requires a positive response and a subsequent read confirming the hash
+is absent. This confirms the Transmission entry, not the filesystem; Arrtify
+never accesses media paths directly. Local hardlink behavior is verified in the
+[manual lab](docs/transmission-lab.md).
+
+Read/validation failures and explicit pre-dispatch RPC rejections are `failed`.
+An uncertain remove response, cancellation during remove, failed confirmation or
+still-present hash is `unknown`. Either result stops further mutations without
+retry; remaining candidates are `not_attempted`. Earlier confirmed removals and
+label changes stay in the report. Errors after confirmed or possible writes give
+`partial` and exit 1; an error before any such effect gives `failed` and exit 1.
+`would_delete` occurs only in dry-run. Final outcome counts account for every
+initially scanned torrent, while `planned` retains the original candidate count.
+
+Fresh reads narrow the race window; the three services do not offer one atomic
+transaction. Run one cleanup owner and avoid concurrent category/path changes.
+Keep Arrtify in dry-run until the existing cleanup executor is durably disabled
+and stopped. Production activation is an operator action, separate from building
+or publishing this version.
+
 ## Ignored-tracker label
 
 Dry-run includes a `tracker_label` plan for every torrent. Select the feature
@@ -117,14 +150,13 @@ ARRTIFY_DRY_RUN=false bin/arrtify --config config.yml
 | --- | --- | --- |
 | `true` or unset | `true` | Plan label changes, zero writes. |
 | `true` or unset | `false` or omitted | Zero writes. |
-| `false` | `true` | Synchronize the managed label; cleanup is still report-only. |
-| `false` | `false` or omitted | No write feature is enabled in this version. |
+| `false` | `true` | Synchronize the managed label, then execute cleanup rules. |
+| `false` | `false` or omitted | Execute cleanup rules without label synchronization. |
 
 Reports and start/finish logs expose the effective `dry_run` boolean and the
 feature setting. The run mode is always `dry-run` or `apply`, controlled solely
 by the environment; label synchronization is a feature, not a separate run
-mode. In this version `apply` can write only labels; cleanup execution remains
-unimplemented. `--check` remains offline regardless of these settings.
+mode. `--check` remains offline regardless of these settings.
 
 The label is present when any tracker matches `ignore_trackers`, using the same
 hostname/subdomain matcher as cleanup policy. It is removed when no tracker
@@ -146,17 +178,17 @@ sets the run to `partial`, and stops further writes without automatic retry.
 Transmission replaces the entire label list and offers no atomic conditional
 update. Fresh reads preserve current foreign labels and readback detects visible
 divergence, but another label writer can still race between read and write.
-Cleanuparr can coexist while Arrtify only manages this informational label;
-check whether Cleanuparr's enabled workflows also write labels, and avoid
-concurrent label changes. This label does not configure Cleanuparr exclusions.
+Avoid concurrent label changes, including changes by Cleanuparr. Keep Arrtify in
+dry-run while Cleanuparr owns cleanup. This label does not configure Cleanuparr
+exclusions.
 
 ## Development
 
 `just ci` checks formatting, vet, race tests (including binary E2E), current Go
 vulnerabilities, short fuzzing pilots, static build and the container smoke.
 `just e2e` reruns binary scenarios and writes
-[artifacts/e2e.json](artifacts/e2e.json). `just fuzz` runs short parser and
-normalization fuzzing pilots. See [docs/development.md](docs/development.md) for
+[artifacts/e2e.json](artifacts/e2e.json). `just fuzz` runs short parser,
+normalization and remove-target fuzzing pilots. See [docs/development.md](docs/development.md) for
 API contracts, limits, test decisions, and boundaries of the evidence.
 
 GitHub Actions runs the same checks with read-only repository permissions. After

@@ -3,6 +3,7 @@ package cleaner
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +57,53 @@ func TestTransmissionDryRunRejectsEveryNonReadMethod(t *testing.T) {
 	if requests.Load() != 0 {
 		t.Fatalf("dry-run made %d non-read requests", requests.Load())
 	}
+}
+
+func FuzzRemoveTarget(f *testing.F) {
+	for _, hash := range []string{"", "all", strings.Repeat("a", 40), strings.Repeat("A", 40), strings.Repeat("0", 39)} {
+		f.Add(hash)
+	}
+	var requests atomic.Int64
+	var target atomic.Value
+	target.Store("")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		var request struct {
+			Method string `json:"method"`
+			ID     int    `json:"id"`
+			Params struct {
+				IDs             []string `json:"ids"`
+				DeleteLocalData bool     `json:"delete_local_data"`
+			} `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&request) != nil || request.Method != "torrent_remove" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if len(request.Params.IDs) != 1 || !request.Params.DeleteLocalData {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		target.Store(request.Params.IDs[0])
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{}})
+	}))
+	defer server.Close()
+	f.Fuzz(func(t *testing.T, hash string) {
+		valid := len(hash) == 40 && strings.ToLower(hash) == hash
+		if valid {
+			_, err := hex.DecodeString(hash)
+			valid = err == nil
+		}
+		before := requests.Load()
+		err := (&transmissionRPC{endpoint: server.URL, allowWrites: true}).remove(t.Context(), hash)
+		if !valid {
+			if err == nil || requests.Load() != before {
+				t.Fatal("invalid remove target reached the RPC boundary")
+			}
+		} else if err != nil || requests.Load() != before+1 || target.Load() != hash {
+			t.Fatalf("single-hash remove failed: %v", err)
+		}
+	})
 }
 
 func TestTransmissionReadHandshakeFieldsAndCanonicalOrder(t *testing.T) {

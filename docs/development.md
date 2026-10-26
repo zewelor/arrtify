@@ -1,6 +1,6 @@
 # Development and proof boundaries
 
-These notes describe cleanup reporting, optional tracker-label synchronization,
+These notes describe cleanup execution, optional tracker-label synchronization,
 verification and proof boundaries.
 The module uses the installed Go 1.27.3 toolchain, standard
 library boundaries, and `go.yaml.in/yaml/v3` v3.0.5. `govulncheck` is pinned through
@@ -30,24 +30,39 @@ redirect rejection, bounded reads and cancellation. Test servers and files are
 disposable and contain no production data. API fixtures describe documented
 shapes; they do not prove compatibility with the operator's live services.
 
+Apply E2E exercises multiple candidates with fresh queues, confirmed absence,
+an uncertain second removal and an unattempted third candidate. Final logs,
+outcomes, counters and exit codes must agree. It also verifies clean apply,
+a newly protected hash, initial Arr failure in apply mode, and label readback
+failure blocking every remove. HTTP runner tests cover fresh state/category/
+tracker changes, missing torrents, bad reads, explicit pre-dispatch rejections,
+uncertain responses, failed/still-present confirmations and cancellation.
+
 Testing decisions:
 
 - Adopt table-driven policy/config tests and real `httptest` boundaries for the
   decision and incomplete-read risks. No framework or source-text assertions.
 - Pilot built-in Go fuzzing for strict YAML, category and hostname normalization
   with `just fuzz`. Seeds run in ordinary tests; the timed campaign is separate.
-  Add guard-invariant fuzzing when the mutation path is implemented.
+  Pilot the single-hash remove boundary with `FuzzRemoveTarget`: arbitrary empty,
+  malformed or noncanonical hashes must never reach HTTP; valid hashes must be
+  sent unchanged, alone, with delete-local-data enabled. Seeds run in normal tests
+  and `just fuzz` adds a five-second campaign. This tests the new mutation guard
+  without changing the existing pure policy or introducing a framework.
 - Adopt deterministic HTTP/CLI state-sequence tests for label synchronization:
   stale label/trackers, missing torrents, preserved foreign labels, idempotence,
   uncertain writes and readback, and stopping subsequent writes. The same suite
   proves that unset/true global `ARRTIFY_DRY_RUN` blocks every write even with label
   sync enabled; the RPC boundary rejects all non-read methods in this mode.
   `--check` remains offline even when write features are configured. No additional stateful framework is
-  needed; extend these scenarios for later destructive apply.
-- Skip a formal/TLA+ model for this bounded sequential metadata operation.
-  Transmission has no compare-and-swap: no client-side model can eliminate the
-  concurrent-writer race. Use fresh reads, readback, explicit uncertainty and
-  deterministic failure tests; reassess for destructive apply or coordination.
+  needed. Extend the same HTTP/CLI approach to destructive apply: an earlier
+  confirmed removal, then unknown, must stop all later writes; label failures
+  must block cleanup. This covers changing external state at the real I/O boundary.
+- Reassessed and skip a formal/TLA+ model for this sequential executor: it has no
+  custom coordination protocol or persistent state. A model cannot make the three
+  services atomic or eliminate external-writer races. Deterministic HTTP/CLI
+  sequences provide the required observable failure evidence at lower cost;
+  reassess if coordination or concurrency is introduced.
 
 ## Compatibility
 
@@ -58,12 +73,23 @@ versions. It requests every decision field, validates presence and values, and
 allows unused additional API fields. A 409 handshake is the sole protocol retry.
 Only environment `ARRTIFY_DRY_RUN=false` together with YAML `sync_tracker_label: true` permits
 synchronization, using single-hash `torrent_set` with
-only `ids` and `labels`. It never calls `torrent_remove`. `labels` is a required
+only `ids` and `labels`. Apply also uses `torrent_remove` with exactly one canonical
+hash and `delete_local_data: true`, even when label synchronization is disabled.
+Only initially planned candidates are considered; each refreshes its torrent and
+both complete queues and reuses `Evaluate`. A changed category is skipped even
+if another rule could qualify it. Positive remove plus confirmed absence is
+`removed`; this does not audit filesystem deletion. `labels` is a required
 array on every torrent read, including targeted refreshes and confirmation.
 Unknown write outcomes stop execution rather than trigger a blind retry. The
 [Transmission 4.1.3 implementation](https://github.com/transmission/transmission/blob/4.1.3/libtransmission/rpcimpl.cc)
 replaces the full label list, so read/write races with another label writer
 remain possible and must not be described as atomic foreign-label preservation.
+
+Only valid, matching-ID JSON-RPC error envelopes with standard pre-dispatch codes
+`-32600`, `-32601` or `-32602` classify a remove as definitely rejected/failed.
+HTTP failures, malformed/conflicting responses, internal/application RPC errors,
+and interrupted or failed confirmations are unknown. This conservative distinction
+does not infer safety from a later absence read or silently retry a remove.
 
 Sonarr/Radarr use `GET /api/v3/queue` with explicit unknown-item flags, all statuses
 and full pagination. Empty/null downloadId is allowed; missing downloadId is an
@@ -91,9 +117,10 @@ services, image publication, log ingestion, Job monitoring and resource budgets
 must be verified separately in the target environment. Do not publish captured
 service responses or operational reports as test fixtures.
 
-Before implementing cleanup, prove real Transmission remove+delete-data and
-hardlink preservation using isolated services and synthetic files. Review
-destructive RPC and partial-failure behavior independently before activation.
+The isolated Transmission RPC/hardlink proof is recorded below. Verify the actual
+Arrtify executor in the same lab and review destructive RPC and partial-failure
+behavior independently before activation. Publishing an image does not activate
+cleanup in the operator's environment.
 
 ## Isolated Transmission proof
 
@@ -107,8 +134,19 @@ The one-off proof on 2026-10-26 downloaded Sintel (129,302,391 bytes, 11 files),
 removed its download paths and verified unchanged SHA-256 for all library
 hardlinks. The report remains in `artifacts/transmission-public-proof.json`.
 The exploratory Go harness was removed; it is not a maintained test suite.
-Arrtify's deletion executor and its review remain pending. Local hardlinks do not
-prove NAS/Storage Box behavior or authorize production activation.
+The current executor's acceptance and review are separate from that exploratory
+proof. Local hardlinks do not prove NAS/Storage Box behavior or authorize
+production activation.
+
+Executor acceptance on 2026-10-26: the current CLI, using the same lab YAML,
+first reported one dry-run candidate with zero writes, then with
+`ARRTIFY_DRY_RUN=false` and label synchronization disabled confirmed one removal
+and zero errors. All 11 download paths disappeared and all 11 library hardlinks
+retained their SHA-256. Local evidence is `artifacts/executor-transmission-proof.json`.
+An independent read-only review of destructive RPC and partial failures found no
+actionable defects. A combined label-success/cleanup-unknown CLI regression case
+also verifies retained label reporting and no later removal. Production activation
+and live NAS/Storage Box behavior remain separate proof boundaries.
 
 Source builds use `-buildvcs=false` and identify themselves as `dev`. Published
 container builds stamp their source commit through the Dockerfile VERSION
