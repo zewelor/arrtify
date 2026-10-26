@@ -25,6 +25,7 @@ type Rule struct {
 	MaxSeedTime *Duration `yaml:"max_seed_time,omitempty"`
 }
 type Config struct {
+	DryRun           *yamlBool   `yaml:"dry_run"`
 	SyncTrackerLabel yamlBool    `yaml:"sync_tracker_label"`
 	Transmission     Endpoint    `yaml:"transmission"`
 	Sonarr           Endpoint    `yaml:"sonarr"`
@@ -33,6 +34,21 @@ type Config struct {
 	Rules            []Rule      `yaml:"rules"`
 	Credentials      Credentials `yaml:"-" json:"-"`
 }
+
+// IsDryRun also defaults to true for configurations built directly in Go.
+func (c Config) IsDryRun() bool { return c.DryRun == nil || bool(*c.DryRun) }
+
+func (c Config) ShouldSyncTrackerLabel() bool {
+	return !c.IsDryRun() && bool(c.SyncTrackerLabel)
+}
+
+func (c Config) RunMode() string {
+	if c.IsDryRun() {
+		return "dry-run"
+	}
+	return "apply"
+}
+
 type Credentials struct{ TransmissionUser, TransmissionPassword, SonarrKey, RadarrKey string }
 
 // yaml/v3 accepts legacy yes/on strings for plain Go booleans. An option

@@ -40,8 +40,9 @@ Testing decisions:
 - Adopt deterministic HTTP/CLI state-sequence tests for label synchronization:
   stale label/trackers, missing torrents, preserved foreign labels, idempotence,
   uncertain writes and readback, and stopping subsequent writes. The same suite
-  proves that omitted/false configuration never writes and that `--check` remains
-  offline with synchronization enabled. No additional stateful framework is
+  proves that omitted/true global `dry_run` blocks every write even with label
+  sync enabled; the RPC boundary rejects all non-read methods in this mode.
+  `--check` remains offline even when write features are configured. No additional stateful framework is
   needed; extend these scenarios for later destructive apply.
 - Skip a formal/TLA+ model for this bounded sequential metadata operation.
   Transmission has no compare-and-swap: no client-side model can eliminate the
@@ -55,7 +56,8 @@ snake_case fields from the [4.1.3 RPC specification](https://github.com/transmis
 It requires an explicitly supported 4.1.x/RPC 6.0.x version and refuses unknown
 versions. It requests every decision field, validates presence and values, and
 allows unused additional API fields. A 409 handshake is the sole protocol retry.
-When YAML `sync_tracker_label: true` enables synchronization, it uses single-hash `torrent_set` with
+Only YAML `dry_run: false` together with `sync_tracker_label: true` permits
+synchronization, using single-hash `torrent_set` with
 only `ids` and `labels`. It never calls `torrent_remove`. `labels` is a required
 array on every torrent read, including targeted refreshes and confirmation.
 Unknown write outcomes stop execution rather than trigger a blind retry. The

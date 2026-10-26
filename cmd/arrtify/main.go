@@ -31,7 +31,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	configPath := flags.String("config", defaultConfigPath, "path to YAML configuration (ARRTIFY_CONFIG_FILE)")
 	check := flags.Bool("check", false, "validate configuration and required environment without network access")
-	apply := flags.Bool("apply", false, "reserved for the later apply stage (currently rejected)")
 	showHelp := func() {
 		fmt.Fprintln(stdout, "Usage: arrtify --config config.yml [--check]")
 		flags.SetOutput(stdout)
@@ -49,9 +48,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if *check {
 		mode = "check"
 	}
-	if *apply {
-		mode = "apply"
-	}
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		fmt.Fprintln(stderr, "cannot initialize run identity")
@@ -65,7 +61,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return a
 	}})).With("run_id", runID, "app_version", version)
 	logger := baseLogger.With("mode", mode)
-	report := cleaner.RunReport{Status: "complete", Decisions: []cleaner.Decision{}}
+	report := cleaner.RunReport{DryRun: true, Status: "complete", Decisions: []cleaner.Decision{}}
 	finish := func(code int) int {
 		report.RunID = runID
 		report.Mode = mode
@@ -97,6 +93,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			report.NotAttempted,
 			"errors",
 			report.Errors,
+			"dry_run", report.DryRun,
+			"sync_tracker_label", report.SyncTrackerLabel,
 			"tracker_labels_planned", report.TrackerLabelsPlanned,
 			"tracker_labels_changed", report.TrackerLabelsChanged,
 			"duration_seconds",
@@ -118,12 +116,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if parseErr != nil || flags.NArg() != 0 {
 		return invalid("invalid command-line arguments; use --help")
 	}
-	if *check && *apply {
-		return invalid("--check and --apply are mutually exclusive")
-	}
-	if *apply {
-		return invalid("apply is not implemented in the reporting stage")
-	}
 	file, err := os.Open(*configPath)
 	if err != nil {
 		return invalid("cannot open configuration file")
@@ -136,11 +128,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if closeErr != nil {
 		return invalid("cannot close configuration file")
 	}
-	if bool(c.SyncTrackerLabel) && !*check {
-		mode = "label-sync"
+	report.DryRun = c.IsDryRun()
+	report.SyncTrackerLabel = bool(c.SyncTrackerLabel)
+	if !*check {
+		mode = c.RunMode()
 		logger = baseLogger.With("mode", mode)
 	}
-	logger.Info("run started", "event", "run_started")
+	logger.Info("run started", "event", "run_started", "dry_run", report.DryRun, "sync_tracker_label", report.SyncTrackerLabel)
 	if *check {
 		return finish(0)
 	}

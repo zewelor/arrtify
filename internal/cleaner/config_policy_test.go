@@ -124,6 +124,54 @@ func TestConfigTrackerLabelSync(t *testing.T) {
 	}
 }
 
+func TestConfigDryRunDefaultsToReadOnly(t *testing.T) {
+	if !(Config{}).IsDryRun() {
+		t.Fatal("zero configuration enables writes")
+	}
+	b, err := os.ReadFile("../../config.example.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		value         string
+		want, invalid bool
+	}{
+		{"", true, false}, {"true", true, false}, {"false", false, false},
+		{"null", true, true}, {`"false"`, true, true}, {"off", true, true},
+	} {
+		t.Run("dry_run="+tc.value, func(t *testing.T) {
+			s := strings.Replace(string(b), "dry_run: true\n", "", 1)
+			if tc.value != "" {
+				s += "\ndry_run: " + tc.value + "\n"
+			}
+			c, err := ParseConfig(strings.NewReader(s), func(string) (string, bool) { return "test-secret", true })
+			if (err != nil) != tc.invalid {
+				t.Fatalf("error = %v, invalid=%v", err, tc.invalid)
+			}
+			if err == nil && c.IsDryRun() != tc.want {
+				t.Fatalf("dry-run=%v, want %v", c.IsDryRun(), tc.want)
+			}
+		})
+	}
+}
+
+func TestRunModeDependsOnlyOnGlobalDryRun(t *testing.T) {
+	on, off := yamlBool(true), yamlBool(false)
+	for _, tc := range []struct {
+		dryRun *yamlBool
+		mode   string
+	}{
+		{nil, "dry-run"}, {&on, "dry-run"}, {&off, "apply"},
+	} {
+		for _, syncEnabled := range []yamlBool{false, true} {
+			c := Config{DryRun: tc.dryRun, SyncTrackerLabel: syncEnabled}
+			if got := c.RunMode(); got != tc.mode {
+				t.Fatalf("sync=%v, mode=%s, want %s", syncEnabled, got, tc.mode)
+			}
+		}
+	}
+}
+
 func sampleTorrent() Torrent {
 	return Torrent{Hash: strings.Repeat("a", 40), Name: "Synthetic", DownloadDir: "/downloads/sonarr", Ratio: 2, SecondsSeeding: 24 * 3600, Status: 6, LeftUntilDone: 0, MetadataComplete: 1, Trackers: []string{}}
 }

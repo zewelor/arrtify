@@ -42,6 +42,7 @@ type transmissionRPC struct {
 	sessionID     string
 	handshakeUsed bool
 	requestID     int
+	allowWrites   bool
 }
 
 func ReadTransmission(ctx context.Context, c Config) ([]Torrent, error) {
@@ -60,7 +61,7 @@ func newTransmissionRPC(ctx context.Context, c Config) (*transmissionRPC, error)
 	if err != nil {
 		return nil, errors.New("transmission: invalid endpoint")
 	}
-	rpc := &transmissionRPC{endpoint: u.String(), credentials: c.Credentials}
+	rpc := &transmissionRPC{endpoint: u.String(), credentials: c.Credentials, allowWrites: !c.IsDryRun()}
 	var session transmissionSession
 	if err := rpc.call(ctx, "session_get", struct {
 		Fields []string `json:"fields"`
@@ -113,6 +114,9 @@ func (rpc *transmissionRPC) readTorrents(ctx context.Context, ids []string) ([]T
 
 // call reuses the encoded request only for the bounded 409 session handshake.
 func (rpc *transmissionRPC) call(ctx context.Context, method string, params any, result any) error {
+	if !rpc.allowWrites && method != "session_get" && method != "torrent_get" {
+		return errors.New("transmission: mutating RPC is forbidden in dry-run")
+	}
 	rpc.requestID++
 	id := rpc.requestID
 	request := struct {

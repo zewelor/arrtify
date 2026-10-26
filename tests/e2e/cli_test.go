@@ -442,7 +442,7 @@ func verifyOutput(t *testing.T, out, logs []byte, code int) cleaner.RunReport {
 					t.Fatalf("summary/report mismatch for %s", key)
 				}
 			}
-			for _, key := range []string{"tracker_labels_planned", "tracker_labels_changed"} {
+			for _, key := range []string{"tracker_labels_planned", "tracker_labels_changed", "dry_run", "sync_tracker_label"} {
 				if _, present := payload[key]; present && !reflect.DeepEqual(event[key], payload[key]) {
 					t.Fatalf("summary/report mismatch for %s", key)
 				}
@@ -492,8 +492,8 @@ func TestCLI(t *testing.T) {
 		{name: "incompatible version", invalidVersion: true, exit: 1, mode: "dry-run", status: "failed"},
 		{name: "invalid config", invalidConfig: true, exit: 2, mode: "dry-run", status: "failed"},
 		{name: "missing secrets", missingEnv: true, exit: 2, mode: "dry-run", status: "failed"},
-		{name: "apply rejected", args: []string{"--apply"}, exit: 2, mode: "apply", status: "failed"},
-		{name: "conflicting flags", args: []string{"--check", "--apply"}, exit: 2, mode: "apply", status: "failed"},
+		{name: "apply flag unsupported", args: []string{"--apply"}, exit: 2, mode: "dry-run", status: "failed"},
+		{name: "unsupported apply with check", args: []string{"--check", "--apply"}, exit: 2, mode: "check", status: "failed"},
 		{name: "removed sync flag rejected", args: []string{"--sync-tracker-label"}, exit: 2, mode: "dry-run", status: "failed"},
 		{name: "unknown flag redacted", args: []string{"--password-secret-canary"}, exit: 2, mode: "dry-run", status: "failed"},
 	} {
@@ -581,6 +581,37 @@ func TestTrackerLabelDryRun(t *testing.T) {
 	}
 }
 
+func TestGlobalDryRunOverridesTrackerLabelSync(t *testing.T) {
+	for _, value := range []string{"", "true"} {
+		t.Run("dry_run="+value, func(t *testing.T) {
+			fixture := &apiFixture{syncTrackerLabels: true, labels: map[string][]string{}}
+			result := recordScenario(t, "global dry-run suppresses enabled label sync", fixture)
+			server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+			defer server.Close()
+			config := configFile(t, server.URL, false)
+			data, err := os.ReadFile(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)
+			s = strings.Replace(s, "dry_run: true\n", "", 1)
+			if value != "" {
+				s += "\ndry_run: " + value + "\n"
+			}
+			if err := os.WriteFile(config, []byte(s), 0600); err != nil {
+				t.Fatal(err)
+			}
+			out, logs, code := runCLIWithConfig(t, config)
+			result.Exit = code
+			result.Report = verifyOutput(t, out, logs, code)
+			if code != 0 || result.Report.Mode != "dry-run" || result.Report.Status != "complete" || result.Report.TrackerLabelsPlanned != 1 || result.Report.TrackerLabelsChanged != 0 || !result.Report.DryRun || !result.Report.SyncTrackerLabel || fixture.mutations.Load() != 0 {
+				t.Fatalf("exit=%d, mutations=%d, report=%+v\n%s", code, fixture.mutations.Load(), result.Report, logs)
+			}
+			assertTrackerLabelDecision(t, trackerLabelDecision(t, decodeReportPayload(t, out), hashFor('d')), true, "add", "would_add")
+		})
+	}
+}
+
 func TestTrackerLabelSync(t *testing.T) {
 	const managedLabel = "arrtify:ignored-tracker"
 	hashA, hashB, hashC, hashD, hashF := hashFor('a'), hashFor('b'), hashFor('c'), hashFor('d'), hashFor('f')
@@ -601,7 +632,7 @@ func TestTrackerLabelSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)), 0600); err != nil {
+	if err := os.WriteFile(config, []byte(strings.Replace(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1), "dry_run: true", "dry_run: false", 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -611,7 +642,7 @@ func TestTrackerLabelSync(t *testing.T) {
 		result.Exit = code
 		result.Report = verifyOutput(t, out, logs, code)
 		payload := decodeReportPayload(t, out)
-		if code != 0 || result.Report.Mode != "label-sync" || result.Report.Status != "complete" {
+		if code != 0 || result.Report.Mode != "apply" || result.Report.Status != "complete" {
 			t.Fatalf("exit %d, report %+v\n%s", code, result.Report, logs)
 		}
 		if reportCount(t, payload, "tracker_labels_planned") != 4 || reportCount(t, payload, "tracker_labels_changed") != 4 {
@@ -652,7 +683,7 @@ func TestTrackerLabelSync(t *testing.T) {
 		result.Exit = code
 		result.Report = verifyOutput(t, out, logs, code)
 		payload := decodeReportPayload(t, out)
-		if code != 0 || result.Report.Mode != "label-sync" || result.Report.Status != "complete" {
+		if code != 0 || result.Report.Mode != "apply" || result.Report.Status != "complete" {
 			t.Fatalf("exit %d, report %+v\n%s", code, result.Report, logs)
 		}
 		if reportCount(t, payload, "tracker_labels_planned") != 0 || reportCount(t, payload, "tracker_labels_changed") != 0 {
@@ -680,7 +711,7 @@ func TestTrackerLabelCheckDoesNotAccessServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)), 0600); err != nil {
+	if err := os.WriteFile(config, []byte(strings.Replace(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1), "dry_run: true", "dry_run: false", 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	out, logs, code := runCLIWithConfig(t, config, "--check")

@@ -6,9 +6,11 @@ Arrtify is a one-shot Go program that reads Transmission and the complete Sonarr
 and Radarr queues, evaluates ordered cleanup rules, and emits a JSON dry-run
 report.
 
-Cleanup remains **read-only**: `--apply` is rejected with exit 2. Dry-run is the
-default. Setting `sync_tracker_label: true` in YAML writes only the managed
-`arrtify:ignored-tracker` label; it never removes torrents or files.
+Cleanup execution is not implemented: torrent/file removal remains **read-only**.
+The CLI has no `--apply` flag; execution is controlled by YAML. Dry-run is the
+default. YAML `dry_run: true` blocks every state-changing API call, including
+labels. Actual label writes require both `dry_run: false` and
+`sync_tracker_label: true`; torrent and file removal is not implemented.
 
 ## Run
 
@@ -95,14 +97,29 @@ Dry-run includes a `tracker_label` plan for every torrent. Synchronization is
 controlled only by the YAML configuration:
 
 ```yaml
+dry_run: true
 sync_tracker_label: true
 ```
 
-The default is `false` when the setting is omitted. With `false`, normal execution
-is a zero-write dry-run (`mode=dry-run`); with `true`, it synchronizes labels
-(`mode=label-sync`) while cleanup remains read-only. Only literal booleans are
-accepted. Run `bin/arrtify --config config.yml` in either case. There is no CLI
-or environment override for this setting.
+`dry_run` defaults to `true`, including when omitted. It reads APIs and reports
+what would happen, but never changes torrents, labels, categories, or files.
+`sync_tracker_label` independently selects label synchronization and defaults to
+`false`. To actually synchronize labels, set `dry_run: false` as well:
+
+| `dry_run` | `sync_tracker_label` | Effect |
+| --- | --- | --- |
+| `true` or omitted | `true` | Plan label changes, zero writes. |
+| `true` or omitted | `false` or omitted | Zero writes. |
+| `false` | `true` | Synchronize the managed label; cleanup is still report-only. |
+| `false` | `false` or omitted | No write feature is enabled in this version. |
+
+Only YAML booleans are accepted. Run `bin/arrtify --config config.yml` in every
+case; there are no CLI or environment overrides for these settings. Reports and
+start/finish logs expose both settings. The run mode is always `dry-run` or
+`apply`, controlled solely by `dry_run`; label synchronization is a feature, not
+a separate run mode. In this version `apply` can write only labels; cleanup
+execution remains unimplemented. `--check`
+remains offline regardless of either setting.
 
 The label is present when any tracker matches `ignore_trackers`, using the same
 hostname/subdomain matcher as cleanup policy. It is removed when no tracker

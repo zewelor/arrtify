@@ -35,6 +35,29 @@ func apiConfig(serverURL string) Config {
 	}
 }
 
+func TestTransmissionDryRunRejectsEveryNonReadMethod(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		var req struct {
+			ID int `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
+	}))
+	defer server.Close()
+	rpc := &transmissionRPC{endpoint: server.URL}
+	for _, method := range []string{"torrent_set", "torrent_remove", "session_set", "unknown_method"} {
+		var result struct{}
+		if err := rpc.call(context.Background(), method, map[string]any{}, &result); err == nil {
+			t.Errorf("dry-run accepted %s", method)
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("dry-run made %d non-read requests", requests.Load())
+	}
+}
+
 func TestTransmissionReadHandshakeFieldsAndCanonicalOrder(t *testing.T) {
 	session := apiFixture(t, "transmission-4.1.3-session.json")
 	torrents := apiFixture(t, "transmission-4.1.3-torrents.json")

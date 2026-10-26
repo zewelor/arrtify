@@ -7,9 +7,12 @@ import (
 
 // Run reads all three sources and plans every decision before optional label writes.
 func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
-	report := RunReport{Mode: "dry-run", Status: "complete", Decisions: []Decision{}}
-	if c.SyncTrackerLabel {
-		report.Mode = "label-sync"
+	report := RunReport{
+		Mode:             c.RunMode(),
+		DryRun:           c.IsDryRun(),
+		SyncTrackerLabel: bool(c.SyncTrackerLabel),
+		Status:           "complete",
+		Decisions:        []Decision{},
 	}
 	rpc, err := newTransmissionRPC(ctx, c)
 	var torrents []Torrent
@@ -68,7 +71,7 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
 			report.TrackerLabelsPlanned++
 		}
 	}
-	if c.SyncTrackerLabel {
+	if c.ShouldSyncTrackerLabel() {
 		syncTrackerLabels(ctx, rpc, c.IgnoreTrackers, &report, logger)
 	}
 	for _, d := range decisions {

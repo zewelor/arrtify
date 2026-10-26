@@ -151,7 +151,7 @@ func TestTrackerLabelSyncFreshReadAndUncertainWrites(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
 			}))
 			defer server.Close()
-			rpc := &transmissionRPC{endpoint: server.URL}
+			rpc := &transmissionRPC{endpoint: server.URL, allowWrites: true}
 			report := RunReport{Status: "complete", Decisions: []Decision{{Hash: hash, TrackerLabel: &TrackerLabelDecision{Action: "add"}}}}
 			syncTrackerLabels(context.Background(), rpc, []string{"tracker.example.invalid"}, &report, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 			if sets != tc.sets || report.TrackerLabelsChanged != tc.changed || report.Errors != tc.errors || report.Status != tc.status || report.Decisions[0].TrackerLabel.Outcome != tc.outcome {
@@ -217,7 +217,7 @@ func TestTrackerLabelSyncStopsAfterPartialProgress(t *testing.T) {
 			if cancelAfterFirst {
 				logger = slog.New(slog.NewJSONHandler(cancelWriter{cancel}, nil))
 			}
-			syncTrackerLabels(ctx, &transmissionRPC{endpoint: server.URL}, []string{"tracker.example.invalid"}, &report, logger)
+			syncTrackerLabels(ctx, &transmissionRPC{endpoint: server.URL, allowWrites: true}, []string{"tracker.example.invalid"}, &report, logger)
 			if report.Status != "partial" || report.Errors != 1 || report.TrackerLabelsChanged != 1 || sets != 1 || calls > 4 {
 				t.Fatalf("calls=%d, sets=%d, report=%+v", calls, sets, report)
 			}
