@@ -111,8 +111,8 @@ sync_tracker_label: true
 ```
 
 The global execution mode is controlled **only** by `ARRTIFY_DRY_RUN`, defaulting
-to `true` when unset. It reads APIs and reports what would happen, but never
-changes torrents, labels, categories, or files. The environment accepts exactly
+to `true` when unset. In dry-run mode, Arrtify reads APIs and reports what would
+happen without changing torrents, labels, categories, or files. The environment accepts exactly
 `true` or `false`; empty or invalid values fail before network access. A YAML
 `dry_run` key is rejected, so there is no second mode source or precedence rule.
 
