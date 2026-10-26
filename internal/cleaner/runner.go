@@ -5,11 +5,14 @@ import (
 	"log/slog"
 )
 
-// Run reads all three sources before producing the dry-run plan. It has no
-// mutation client; failed source reads cannot accidentally fall through to apply.
-func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
+// Run reads all three sources and plans every decision before optional label writes.
+func Run(ctx context.Context, c Config, logger *slog.Logger, syncLabels bool) RunReport {
 	report := RunReport{Mode: "dry-run", Status: "complete", Decisions: []Decision{}}
-	torrents, err := ReadTransmission(ctx, c)
+	rpc, err := newTransmissionRPC(ctx, c)
+	var torrents []Torrent
+	if err == nil {
+		torrents, err = rpc.readTorrents(ctx, nil)
+	}
 	if err != nil {
 		report.Status = "failed"
 		report.Errors = 1
@@ -46,12 +49,26 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
 		if err != nil {
 			return fail("policy", err)
 		}
+		label, _, err := planTrackerLabel(torrent, c.IgnoreTrackers)
+		if err != nil {
+			return fail("policy", err)
+		}
+		decision.TrackerLabel = &label
 		decisions = append(decisions, decision)
 	}
 	if err := ctx.Err(); err != nil {
 		return fail("run", err)
 	}
 	report.Decisions = decisions
+	for _, d := range decisions {
+		if d.TrackerLabel.Action != "none" {
+			report.TrackerLabelsPlanned++
+		}
+	}
+	if syncLabels {
+		report.Mode = "label-sync"
+		syncTrackerLabels(ctx, rpc, c.IgnoreTrackers, &report, logger)
+	}
 	for _, d := range decisions {
 		switch d.Outcome {
 		case "would_delete":
@@ -83,6 +100,9 @@ func logDecision(logger *slog.Logger, d Decision) {
 	}
 	if d.Criteria != nil {
 		attrs = append(attrs, "criteria", d.Criteria)
+	}
+	if d.TrackerLabel != nil {
+		attrs = append(attrs, "tracker_label", d.TrackerLabel)
 	}
 	logger.Info("torrent decision", attrs...)
 }

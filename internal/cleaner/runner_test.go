@@ -27,7 +27,7 @@ func TestRunAbortsBeforeDecisionsOnArrFailure(t *testing.T) {
 			case "session_get":
 				result = map[string]any{"version": "4.1.3", "rpc_version_semver": "6.0.1"}
 			case "torrent_get":
-				result = map[string]any{"torrents": []any{map[string]any{"hash_string": strings.Repeat("a", 40), "name": "Synthetic", "download_dir": "/downloads/sonarr", "upload_ratio": 2, "seconds_seeding": 24 * 3600, "status": 6, "is_finished": false, "left_until_done": 0, "metadata_percent_complete": 1, "trackers": []any{}}}}
+				result = map[string]any{"torrents": []any{map[string]any{"hash_string": strings.Repeat("a", 40), "name": "Synthetic", "download_dir": "/downloads/sonarr", "upload_ratio": 2, "seconds_seeding": 24 * 3600, "status": 6, "is_finished": false, "left_until_done": 0, "metadata_percent_complete": 1, "trackers": []any{}, "labels": []string{}}}}
 			default:
 				t.Errorf("unexpected RPC %s", req.Method)
 			}
@@ -46,7 +46,7 @@ func TestRunAbortsBeforeDecisionsOnArrFailure(t *testing.T) {
 	c.Transmission.URL = server.URL + "/transmission/rpc"
 	c.Sonarr.URL = server.URL + "/sonarr"
 	c.Radarr.URL = server.URL + "/radarr"
-	report := Run(context.Background(), c, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	report := Run(context.Background(), c, slog.New(slog.NewJSONHandler(io.Discard, nil)), false)
 	if report.Status != "failed" || report.Scanned != 1 || report.NotAttempted != 1 || report.Errors != 1 || report.Planned != 0 || report.Attempted != 0 || len(report.Decisions) != 1 || report.Decisions[0].Reason != "source_read_failed" {
 		t.Fatalf("unexpected report %+v", report)
 	}

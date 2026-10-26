@@ -36,9 +36,18 @@ func TestContainerSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	network := "arrtify-e2e-" + filepath.Base(t.TempDir())
-	if _, err := runDocker(ctx, "network", "create", "--internal", network); err != nil {
+	networkSuffixDir, err := os.MkdirTemp("", "arrtify-e2e-network-")
+	if err != nil {
 		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(networkSuffixDir); err != nil {
+			t.Logf("remove container smoke network token: %v", err)
+		}
+	})
+	network := "arrtify-e2e-" + filepath.Base(networkSuffixDir)
+	if output, err := runDocker(ctx, "network", "create", "--internal", network); err != nil {
+		t.Fatalf("create container smoke network: %v\n%s", err, output)
 	}
 	t.Cleanup(func() {
 		if _, err := runDocker(context.Background(), "network", "rm", network); err != nil {

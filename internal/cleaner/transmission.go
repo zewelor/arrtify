@@ -33,6 +33,7 @@ type transmissionTorrent struct {
 	LeftUntilDone           json.RawMessage        `json:"left_until_done"`
 	MetadataPercentComplete *float64               `json:"metadata_percent_complete"`
 	Trackers                *[]transmissionTracker `json:"trackers"`
+	Labels                  *[]string              `json:"labels"`
 }
 
 type transmissionRPC struct {
@@ -40,9 +41,18 @@ type transmissionRPC struct {
 	credentials   Credentials
 	sessionID     string
 	handshakeUsed bool
+	requestID     int
 }
 
 func ReadTransmission(ctx context.Context, c Config) ([]Torrent, error) {
+	rpc, err := newTransmissionRPC(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return rpc.readTorrents(ctx, nil)
+}
+
+func newTransmissionRPC(ctx context.Context, c Config) (*transmissionRPC, error) {
 	if c.Credentials.TransmissionUser == "" || c.Credentials.TransmissionPassword == "" || strings.ContainsAny(c.Credentials.TransmissionUser+c.Credentials.TransmissionPassword, "\r\n") {
 		return nil, errors.New("transmission: credentials are missing or invalid")
 	}
@@ -50,15 +60,11 @@ func ReadTransmission(ctx context.Context, c Config) ([]Torrent, error) {
 	if err != nil {
 		return nil, errors.New("transmission: invalid endpoint")
 	}
-	rpc := transmissionRPC{endpoint: u.String(), credentials: c.Credentials}
+	rpc := &transmissionRPC{endpoint: u.String(), credentials: c.Credentials}
 	var session transmissionSession
-	if err := rpc.get(
-		ctx,
-		"session_get",
-		1,
-		[]string{"version", "rpc_version_semver"},
-		&session,
-	); err != nil {
+	if err := rpc.call(ctx, "session_get", struct {
+		Fields []string `json:"fields"`
+	}{[]string{"version", "rpc_version_semver"}}, &session); err != nil {
 		return nil, err
 	}
 
@@ -66,14 +72,21 @@ func ReadTransmission(ctx context.Context, c Config) ([]Torrent, error) {
 		return nil, errors.New("transmission: unsupported or incomplete version response")
 	}
 
+	return rpc, nil
+}
+
+func (rpc *transmissionRPC) readTorrents(ctx context.Context, ids []string) ([]Torrent, error) {
 	torrentFields := []string{
 		"hash_string", "name", "download_dir", "upload_ratio", "seconds_seeding",
-		"status", "is_finished", "left_until_done", "metadata_percent_complete", "trackers",
+		"status", "is_finished", "left_until_done", "metadata_percent_complete", "trackers", "labels",
 	}
 	var torrentResponse struct {
 		Torrents *[]transmissionTorrent `json:"torrents"`
 	}
-	if err := rpc.get(ctx, "torrent_get", 2, torrentFields, &torrentResponse); err != nil {
+	if err := rpc.call(ctx, "torrent_get", struct {
+		Fields []string `json:"fields"`
+		IDs    []string `json:"ids,omitempty"`
+	}{torrentFields, ids}, &torrentResponse); err != nil {
 		return nil, err
 	}
 
@@ -98,24 +111,16 @@ func ReadTransmission(ctx context.Context, c Config) ([]Torrent, error) {
 	return torrents, nil
 }
 
-// get encodes and validates the shared JSON-RPC envelope for both read methods.
-// The same encoded request is reused for the bounded 409 session handshake.
-func (rpc *transmissionRPC) get(
-	ctx context.Context,
-	method string,
-	id int,
-	fields []string,
-	result any,
-) error {
+// call reuses the encoded request only for the bounded 409 session handshake.
+func (rpc *transmissionRPC) call(ctx context.Context, method string, params any, result any) error {
+	rpc.requestID++
+	id := rpc.requestID
 	request := struct {
 		JSONRPC string `json:"jsonrpc"`
 		Method  string `json:"method"`
-		Params  struct {
-			Fields []string `json:"fields"`
-		} `json:"params"`
-		ID int `json:"id"`
-	}{JSONRPC: "2.0", Method: method, ID: id}
-	request.Params.Fields = fields
+		Params  any    `json:"params"`
+		ID      int    `json:"id"`
+	}{"2.0", method, params, id}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return errors.New("transmission: failed to encode " + method)
@@ -207,7 +212,7 @@ func versionIs(version, major, minor string) bool {
 }
 
 func (raw transmissionTorrent) domainTorrent() (Torrent, error) {
-	if raw.HashString == nil || raw.Name == nil || raw.DownloadDir == nil || raw.UploadRatio == nil || raw.Status == nil || raw.IsFinished == nil || raw.MetadataPercentComplete == nil || raw.Trackers == nil {
+	if raw.HashString == nil || raw.Name == nil || raw.DownloadDir == nil || raw.UploadRatio == nil || raw.Status == nil || raw.IsFinished == nil || raw.MetadataPercentComplete == nil || raw.Trackers == nil || raw.Labels == nil {
 		return Torrent{}, errors.New("required field missing or null")
 	}
 	secondsSeeding, err := jsonInteger(raw.SecondsSeeding)
@@ -229,6 +234,11 @@ func (raw transmissionTorrent) domainTorrent() (Torrent, error) {
 		}
 		trackers = append(trackers, *tracker.Announce)
 	}
+	for _, label := range *raw.Labels {
+		if label == "" || strings.TrimSpace(label) != label || strings.Contains(label, ",") {
+			return Torrent{}, errors.New("invalid torrent label")
+		}
+	}
 	item := Torrent{
 		Hash:             hash,
 		Name:             *raw.Name,
@@ -240,6 +250,7 @@ func (raw transmissionTorrent) domainTorrent() (Torrent, error) {
 		LeftUntilDone:    leftUntilDone,
 		MetadataComplete: *raw.MetadataPercentComplete,
 		Trackers:         trackers,
+		Labels:           append([]string{}, (*raw.Labels)...),
 	}
 	if err := item.validate(); err != nil {
 		return Torrent{}, err
@@ -272,4 +283,30 @@ func jsonInteger(raw json.RawMessage) (int64, error) {
 		return 0, errors.New("integer field is out of range")
 	}
 	return rational.Num().Int64(), nil
+}
+
+func (rpc *transmissionRPC) torrent(ctx context.Context, hash string) (*Torrent, error) {
+	torrents, err := rpc.readTorrents(ctx, []string{hash})
+	if err != nil {
+		return nil, err
+	}
+	if len(torrents) == 0 {
+		return nil, nil
+	}
+	if len(torrents) != 1 || torrents[0].Hash != hash {
+		return nil, errors.New("transmission: unexpected torrent in targeted read")
+	}
+	return &torrents[0], nil
+}
+
+func (rpc *transmissionRPC) setLabels(ctx context.Context, hash string, labels []string) error {
+	canonical, err := canonicalHash(hash)
+	if err != nil || canonical != hash || labels == nil {
+		return errors.New("transmission: invalid label update")
+	}
+	var result struct{}
+	return rpc.call(ctx, "torrent_set", struct {
+		IDs    []string `json:"ids"`
+		Labels []string `json:"labels"`
+	}{[]string{hash}, labels}, &result)
 }

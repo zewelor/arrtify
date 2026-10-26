@@ -6,8 +6,9 @@ Arrtify is a one-shot Go program that reads Transmission and the complete Sonarr
 and Radarr queues, evaluates ordered cleanup rules, and emits a JSON dry-run
 report.
 
-This first implementation is **read-only**. It supports `--check` and dry-run;
-`--apply` is explicitly rejected with exit 2. This version reports decisions only.
+Cleanup remains **read-only**: `--apply` is rejected with exit 2. Dry-run is the
+default. The optional `--sync-tracker-label` mode writes only the managed
+`arrtify:ignored-tracker` label; it never removes torrents or files.
 
 ## Run
 
@@ -87,6 +88,37 @@ outcome. Final summary logs contain the same outcome counters as the report.
 The example uses placeholder service addresses, an `.invalid` tracker hostname,
 and illustrative category rules. Replace them with your own service URLs and policy.
 Tests use only synthetic data and disposable local APIs.
+
+## Ignored-tracker label
+
+Dry-run includes a `tracker_label` plan for every torrent. To synchronize it:
+
+```sh
+bin/arrtify --config config.yml --sync-tracker-label
+```
+
+The label is present when any tracker matches `ignore_trackers`, using the same
+hostname/subdomain matcher as cleanup policy. It is removed when no tracker
+matches, including after the ignore list changes. This applies to all torrents,
+regardless of queue protection, category, or download state. Other labels retain
+their spelling and order. Labels never determine cleanup categories or rules.
+`--check` and `--sync-tracker-label` are mutually exclusive.
+
+The run reads all three sources before any write. Each planned change refreshes
+the torrent, recomputes the label, writes only that hash, and verifies the full
+label list. Already correct labels cause no write. Missing or malformed tracker
+or label data stops the run; a torrent deleted before its write is skipped.
+`tracker_labels_planned` counts initial changes and `tracker_labels_changed`
+counts confirmed changes. Each decision reports its label action and outcome
+separately from the cleanup outcome. A failed write or readback is `unknown`,
+sets the run to `partial`, and stops further writes without automatic retry.
+
+Transmission replaces the entire label list and offers no atomic conditional
+update. Fresh reads preserve current foreign labels and readback detects visible
+divergence, but another label writer can still race between read and write.
+Cleanuparr can coexist while Arrtify only manages this informational label;
+check whether Cleanuparr's enabled workflows also write labels, and avoid
+concurrent label changes. This label does not configure Cleanuparr exclusions.
 
 ## Development
 

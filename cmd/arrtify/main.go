@@ -31,9 +31,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	configPath := flags.String("config", defaultConfigPath, "path to YAML configuration (ARRTIFY_CONFIG_FILE)")
 	check := flags.Bool("check", false, "validate configuration and required environment without network access")
+	syncLabels := flags.Bool("sync-tracker-label", false, "synchronize the managed ignored-tracker label; cleanup stays read-only")
 	apply := flags.Bool("apply", false, "reserved for the later apply stage (currently rejected)")
 	showHelp := func() {
-		fmt.Fprintln(stdout, "Usage: arrtify --config config.yml [--check]")
+		fmt.Fprintln(stdout, "Usage: arrtify --config config.yml [--check | --sync-tracker-label]")
 		flags.SetOutput(stdout)
 		flags.PrintDefaults()
 		flags.SetOutput(io.Discard)
@@ -46,6 +47,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	mode := "dry-run"
+	if *syncLabels {
+		mode = "label-sync"
+	}
 	if *check {
 		mode = "check"
 	}
@@ -97,6 +101,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			report.NotAttempted,
 			"errors",
 			report.Errors,
+			"tracker_labels_planned", report.TrackerLabelsPlanned,
+			"tracker_labels_changed", report.TrackerLabelsChanged,
 			"duration_seconds",
 			report.DurationSeconds,
 		)
@@ -114,6 +120,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if parseErr != nil || flags.NArg() != 0 {
 		return invalid("invalid command-line arguments; use --help")
+	}
+	if *check && *syncLabels {
+		return invalid("--check and --sync-tracker-label are mutually exclusive")
 	}
 	if *check && *apply {
 		return invalid("--check and --apply are mutually exclusive")
@@ -140,7 +149,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 270*time.Second)
 	defer cancel()
-	report = cleaner.Run(ctx, c, logger)
+	report = cleaner.Run(ctx, c, logger, *syncLabels)
 	if report.Errors != 0 {
 		return finish(1)
 	}

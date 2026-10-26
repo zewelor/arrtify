@@ -12,6 +12,7 @@
         "is_finished": true,
         "left_until_done": 0,
         "metadata_percent_complete": 1,
+        "labels": ["operator:keep"],
         "trackers": [
           {"announce": "https://tracker.example.invalid/announce", "id": 1, "tier": 0}
         ],
@@ -27,6 +28,7 @@
         "is_finished": true,
         "left_until_done": 0,
         "metadata_percent_complete": 1,
+        "labels": [],
         "trackers": []
       }
     ]

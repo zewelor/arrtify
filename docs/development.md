@@ -1,6 +1,7 @@
 # Development and proof boundaries
 
-These notes describe the reporting implementation, verification and proof boundaries.
+These notes describe cleanup reporting, optional tracker-label synchronization,
+verification and proof boundaries.
 The module uses the installed Go 1.27.3 toolchain, standard
 library boundaries, and `go.yaml.in/yaml/v3` v3.0.5. `govulncheck` is pinned through
 Go's module tool mechanism. There are no other runtime dependencies.
@@ -36,11 +37,15 @@ Testing decisions:
 - Pilot built-in Go fuzzing for strict YAML, category and hostname normalization
   with `just fuzz`. Seeds run in ordinary tests; the timed campaign is separate.
   Add guard-invariant fuzzing when the mutation path is implemented.
-- Keep deterministic state-sequence tests for the later apply stage, where queue
-  changes, unknown outcomes, abort accounting and cancellation affect mutations.
-  No extra stateful framework is justified for this read-only slice.
-- Skip a formal/TLA+ model: this stage has no coordination protocol or persistent
-  state. Reassess cost/benefit when contracts, transitions or concurrency change.
+- Adopt deterministic HTTP/CLI state-sequence tests for label synchronization:
+  stale label/trackers, missing torrents, preserved foreign labels, idempotence,
+  uncertain writes and readback, and stopping subsequent writes. The same suite
+  proves that default dry-run never writes. No additional stateful framework is
+  needed; extend these scenarios for later destructive apply.
+- Skip a formal/TLA+ model for this bounded sequential metadata operation.
+  Transmission has no compare-and-swap: no client-side model can eliminate the
+  concurrent-writer race. Use fresh reads, readback, explicit uncertainty and
+  deterministic failure tests; reassess for destructive apply or coordination.
 
 ## Compatibility
 
@@ -49,7 +54,13 @@ snake_case fields from the [4.1.3 RPC specification](https://github.com/transmis
 It requires an explicitly supported 4.1.x/RPC 6.0.x version and refuses unknown
 versions. It requests every decision field, validates presence and values, and
 allows unused additional API fields. A 409 handshake is the sole protocol retry.
-There are no mutation methods in this slice.
+The explicit `--sync-tracker-label` mode also uses single-hash `torrent_set` with
+only `ids` and `labels`. It never calls `torrent_remove`. `labels` is a required
+array on every torrent read, including targeted refreshes and confirmation.
+Unknown write outcomes stop execution rather than trigger a blind retry. The
+[Transmission 4.1.3 implementation](https://github.com/transmission/transmission/blob/4.1.3/libtransmission/rpcimpl.cc)
+replaces the full label list, so read/write races with another label writer
+remain possible and must not be described as atomic foreign-label preservation.
 
 Sonarr/Radarr use `GET /api/v3/queue` with explicit unknown-item flags, all statuses
 and full pagination. Empty/null downloadId is allowed; missing downloadId is an

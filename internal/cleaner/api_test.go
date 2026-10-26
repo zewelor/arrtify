@@ -80,7 +80,7 @@ func TestTransmissionReadHandshakeFieldsAndCanonicalOrder(t *testing.T) {
 			_, _ = w.Write(session)
 		case "torrent_get":
 			var fields []string
-			want := []string{"hash_string", "name", "download_dir", "upload_ratio", "seconds_seeding", "status", "is_finished", "left_until_done", "metadata_percent_complete", "trackers"}
+			want := []string{"hash_string", "name", "download_dir", "upload_ratio", "seconds_seeding", "status", "is_finished", "left_until_done", "metadata_percent_complete", "trackers", "labels"}
 			if err := json.Unmarshal(request.Params["fields"], &fields); err != nil || !reflect.DeepEqual(fields, want) {
 				t.Errorf("torrent_get fields = %v, err %v", fields, err)
 			}
@@ -171,6 +171,11 @@ func TestTransmissionRejectsMissingNullAndInvalidTorrentFields(t *testing.T) {
 		"invalid metadata":     func(row map[string]any) { row["metadata_percent_complete"] = 1.1 },
 		"null trackers":        func(row map[string]any) { row["trackers"] = nil },
 		"missing announce":     func(row map[string]any) { row["trackers"] = []any{map[string]any{"id": 1.0}} },
+		"missing labels":       func(row map[string]any) { delete(row, "labels") },
+		"null labels":          func(row map[string]any) { row["labels"] = nil },
+		"non-string label":     func(row map[string]any) { row["labels"] = []any{42} },
+		"empty label":          func(row map[string]any) { row["labels"] = []any{""} },
+		"comma in label":       func(row map[string]any) { row["labels"] = []any{"one,two"} },
 	}
 	for name, edit := range cases {
 		t.Run(name, func(t *testing.T) {

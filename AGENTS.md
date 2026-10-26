@@ -15,7 +15,9 @@ API compatibility or activation.
 - Category comes from the final DownloadDir component, never Transmission labels.
   Arr protects every nonempty downloadId in both complete queues, in every status.
   Missing or invalid decision data is an error, never an empty queue or a zero.
-- Dry-run is the default. The initial implementation has no mutation path.
+- Dry-run is the default. Only `--sync-tracker-label` may write metadata: manage
+  `arrtify:ignored-tracker`, refresh before each single-hash write, preserve other
+  labels, confirm readback, and stop on uncertain results without retry.
   Future apply must use a single hash, fresh torrent and both queue reads before
   each remove, and stop on errors or uncertain effects. Keep one policy and one
   decision model shared by reporting and execution.

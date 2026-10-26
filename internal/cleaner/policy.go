@@ -20,19 +20,21 @@ type Torrent struct {
 	LeftUntilDone           int64
 	MetadataComplete        float64
 	Trackers                []string
+	Labels                  []string
 }
 type Decision struct {
-	Hash            string        `json:"torrent_hash"`
-	Name            string        `json:"torrent_name"`
-	Category        string        `json:"category"`
-	Rule            string        `json:"rule,omitempty"`
-	Reason          string        `json:"reason"`
-	Outcome         string        `json:"outcome"`
-	UploadRatio     float64       `json:"upload_ratio"`
-	SecondsSeeding  int64         `json:"seed_time_seconds"`
-	SeedTime        string        `json:"seed_time"`
-	UploadRatioKind string        `json:"upload_ratio_kind"`
-	Criteria        *RuleCriteria `json:"criteria,omitempty"`
+	TrackerLabel    *TrackerLabelDecision `json:"tracker_label,omitempty"`
+	Hash            string                `json:"torrent_hash"`
+	Name            string                `json:"torrent_name"`
+	Category        string                `json:"category"`
+	Rule            string                `json:"rule,omitempty"`
+	Reason          string                `json:"reason"`
+	Outcome         string                `json:"outcome"`
+	UploadRatio     float64               `json:"upload_ratio"`
+	SecondsSeeding  int64                 `json:"seed_time_seconds"`
+	SeedTime        string                `json:"seed_time"`
+	UploadRatioKind string                `json:"upload_ratio_kind"`
+	Criteria        *RuleCriteria         `json:"criteria,omitempty"`
 }
 
 // RuleCriteria records the exact thresholds and predicate results used by the
@@ -162,14 +164,13 @@ func Evaluate(c Config, t Torrent, protected bool) (Decision, error) {
 		d.Reason = "arr_queue"
 		return d, nil
 	}
-	for _, s := range t.Trackers {
-		h, _ := trackerHost(s)
-		for _, ignored := range c.IgnoreTrackers {
-			if h == ignored || strings.HasSuffix(h, "."+ignored) {
-				d.Reason = "ignored_tracker"
-				return d, nil
-			}
-		}
+	ignored, err := matchesIgnoredTracker(t.Trackers, c.IgnoreTrackers)
+	if err != nil {
+		return Decision{}, err
+	}
+	if ignored {
+		d.Reason = "ignored_tracker"
+		return d, nil
 	}
 	for _, rule := range c.Rules {
 		matches := false
