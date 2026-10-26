@@ -95,6 +95,21 @@ Before implementing cleanup, prove real Transmission remove+delete-data and
 hardlink preservation using isolated services and synthetic files. Review
 destructive RPC and partial-failure behavior independently before activation.
 
+## Isolated Transmission proof
+
+[The manual lab](transmission-lab.md) uses a small Bash script and a pinned real
+Transmission container. `just transmission-up` starts it; `just transmission-down`
+stops it. The guide covers a legal public download, the current CLI with existing
+synthetic Arr fixtures, and remove+delete-data with hardlink verification. Policy
+and failure-sequence coverage stays in the existing Go unit/HTTP/E2E tests.
+
+The one-off proof on 2026-10-26 downloaded Sintel (129,302,391 bytes, 11 files),
+removed its download paths and verified unchanged SHA-256 for all library
+hardlinks. The report remains in `artifacts/transmission-public-proof.json`.
+The exploratory Go harness was removed; it is not a maintained test suite.
+Arrtify's deletion executor and its review remain pending. Local hardlinks do not
+prove NAS/Storage Box behavior or authorize production activation.
+
 Source builds use `-buildvcs=false` and identify themselves as `dev`. Published
 container builds stamp their source commit through the Dockerfile VERSION
 argument. A separate trusted Actions job publishes only after the complete

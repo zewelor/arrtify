@@ -20,6 +20,12 @@ test:
 e2e:
     go test -race -count=1 ./tests/e2e
 
+transmission-up:
+    bash scripts/transmission-lab.sh up
+
+transmission-down:
+    bash scripts/transmission-lab.sh down
+
 vuln:
     go tool govulncheck ./...
 
