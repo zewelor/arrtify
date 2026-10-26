@@ -494,7 +494,7 @@ func TestCLI(t *testing.T) {
 		{name: "missing secrets", missingEnv: true, exit: 2, mode: "dry-run", status: "failed"},
 		{name: "apply rejected", args: []string{"--apply"}, exit: 2, mode: "apply", status: "failed"},
 		{name: "conflicting flags", args: []string{"--check", "--apply"}, exit: 2, mode: "apply", status: "failed"},
-		{name: "check conflicts with tracker label sync", args: []string{"--check", "--sync-tracker-label"}, exit: 2, mode: "check", status: "failed"},
+		{name: "removed sync flag rejected", args: []string{"--sync-tracker-label"}, exit: 2, mode: "dry-run", status: "failed"},
 		{name: "unknown flag redacted", args: []string{"--password-secret-canary"}, exit: 2, mode: "dry-run", status: "failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -541,28 +541,43 @@ func TestCLI(t *testing.T) {
 }
 
 func TestTrackerLabelDryRun(t *testing.T) {
-	fixture := &apiFixture{}
-	result := recordScenario(t, "tracker label dry-run plans without writes", fixture)
-	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
-	defer server.Close()
+	for _, omitted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "explicit false", true: "omitted"}[omitted], func(t *testing.T) {
+			fixture := &apiFixture{}
+			result := recordScenario(t, "tracker label dry-run plans without writes", fixture)
+			server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+			defer server.Close()
 
-	out, logs, code := runCLI(t, server.URL)
-	result.Exit = code
-	result.Report = verifyOutput(t, out, logs, code)
-	payload := decodeReportPayload(t, out)
-	if code != 0 || result.Report.Mode != "dry-run" || result.Report.Status != "complete" {
-		t.Fatalf("exit %d, report %+v\n%s", code, result.Report, logs)
-	}
-	if result.Report.Scanned != 6 || result.Report.WouldDelete != 2 || result.Report.Removed != 0 || result.Report.Attempted != 0 {
-		t.Fatalf("dry-run did not retain cleanup reporting: %+v", result.Report)
-	}
-	if reportCount(t, payload, "tracker_labels_planned") != 1 || reportCount(t, payload, "tracker_labels_changed") != 0 {
-		t.Fatalf("dry-run tracker label counters: %v", payload)
-	}
-	decision := trackerLabelDecision(t, payload, hashFor('d'))
-	assertTrackerLabelDecision(t, decision, true, "add", "would_add")
-	if fixture.mutations.Load() != 0 {
-		t.Fatalf("dry-run sent %d mutations", fixture.mutations.Load())
+			config := configFile(t, server.URL, false)
+			if omitted {
+				data, err := os.ReadFile(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sync_tracker_label: false\n", "", 1)), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, logs, code := runCLIWithConfig(t, config)
+			result.Exit = code
+			result.Report = verifyOutput(t, out, logs, code)
+			payload := decodeReportPayload(t, out)
+			if code != 0 || result.Report.Mode != "dry-run" || result.Report.Status != "complete" {
+				t.Fatalf("exit %d, report %+v\n%s", code, result.Report, logs)
+			}
+			if result.Report.Scanned != 6 || result.Report.WouldDelete != 2 || result.Report.Removed != 0 || result.Report.Attempted != 0 {
+				t.Fatalf("dry-run did not retain cleanup reporting: %+v", result.Report)
+			}
+			if reportCount(t, payload, "tracker_labels_planned") != 1 || reportCount(t, payload, "tracker_labels_changed") != 0 {
+				t.Fatalf("dry-run tracker label counters: %v", payload)
+			}
+			decision := trackerLabelDecision(t, payload, hashFor('d'))
+			assertTrackerLabelDecision(t, decision, true, "add", "would_add")
+			if fixture.mutations.Load() != 0 {
+				t.Fatalf("dry-run sent %d mutations", fixture.mutations.Load())
+			}
+
+		})
 	}
 }
 
@@ -582,10 +597,17 @@ func TestTrackerLabelSync(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
 	defer server.Close()
 	config := configFile(t, server.URL, false)
+	data, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("adds and removes only the managed label", func(t *testing.T) {
 		result := recordScenario(t, "tracker label sync adds and removes managed tag", fixture)
-		out, logs, code := runCLIWithConfig(t, config, "--sync-tracker-label")
+		out, logs, code := runCLIWithConfig(t, config)
 		result.Exit = code
 		result.Report = verifyOutput(t, out, logs, code)
 		payload := decodeReportPayload(t, out)
@@ -626,7 +648,7 @@ func TestTrackerLabelSync(t *testing.T) {
 	t.Run("second run performs no unnecessary mutation", func(t *testing.T) {
 		result := recordScenario(t, "tracker label sync second run is unchanged", fixture)
 		callsBefore := len(fixture.rpcCallSnapshot())
-		out, logs, code := runCLIWithConfig(t, config, "--sync-tracker-label")
+		out, logs, code := runCLIWithConfig(t, config)
 		result.Exit = code
 		result.Report = verifyOutput(t, out, logs, code)
 		payload := decodeReportPayload(t, out)
@@ -648,15 +670,23 @@ func TestTrackerLabelSync(t *testing.T) {
 	})
 }
 
-func TestTrackerLabelSyncConflictDoesNotAccessServices(t *testing.T) {
+func TestTrackerLabelCheckDoesNotAccessServices(t *testing.T) {
 	fixture := &apiFixture{}
-	result := recordScenario(t, "check conflicts with tracker label sync without network", fixture)
+	result := recordScenario(t, "check validates enabled label sync without network", fixture)
 	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
 	defer server.Close()
-	out, logs, code := runCLI(t, server.URL, "--check", "--sync-tracker-label")
+	config := configFile(t, server.URL, false)
+	data, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, logs, code := runCLIWithConfig(t, config, "--check")
 	result.Exit = code
 	result.Report = verifyOutput(t, out, logs, code)
-	if code != 2 || result.Report.Status != "failed" || fixture.requests.Load() != 0 || fixture.mutations.Load() != 0 {
+	if code != 0 || result.Report.Mode != "check" || result.Report.Status != "complete" || fixture.requests.Load() != 0 || fixture.mutations.Load() != 0 {
 		t.Fatalf("exit %d, requests=%d mutations=%d report=%+v\n%s", code, fixture.requests.Load(), fixture.mutations.Load(), result.Report, logs)
 	}
 }

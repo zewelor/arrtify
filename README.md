@@ -7,7 +7,7 @@ and Radarr queues, evaluates ordered cleanup rules, and emits a JSON dry-run
 report.
 
 Cleanup remains **read-only**: `--apply` is rejected with exit 2. Dry-run is the
-default. The optional `--sync-tracker-label` mode writes only the managed
+default. Setting `sync_tracker_label: true` in YAML writes only the managed
 `arrtify:ignored-tracker` label; it never removes torrents or files.
 
 ## Run
@@ -91,18 +91,26 @@ Tests use only synthetic data and disposable local APIs.
 
 ## Ignored-tracker label
 
-Dry-run includes a `tracker_label` plan for every torrent. To synchronize it:
+Dry-run includes a `tracker_label` plan for every torrent. Synchronization is
+controlled only by the YAML configuration:
 
-```sh
-bin/arrtify --config config.yml --sync-tracker-label
+```yaml
+sync_tracker_label: true
 ```
+
+The default is `false` when the setting is omitted. With `false`, normal execution
+is a zero-write dry-run (`mode=dry-run`); with `true`, it synchronizes labels
+(`mode=label-sync`) while cleanup remains read-only. Only literal booleans are
+accepted. Run `bin/arrtify --config config.yml` in either case. There is no CLI
+or environment override for this setting.
 
 The label is present when any tracker matches `ignore_trackers`, using the same
 hostname/subdomain matcher as cleanup policy. It is removed when no tracker
 matches, including after the ignore list changes. This applies to all torrents,
 regardless of queue protection, category, or download state. Other labels retain
 their spelling and order. Labels never determine cleanup categories or rules.
-`--check` and `--sync-tracker-label` are mutually exclusive.
+`--check` validates the configuration offline, including when synchronization
+is enabled, and never reads APIs or writes labels.
 
 The run reads all three sources before any write. Each planned change refreshes
 the torrent, recomputes the label, writes only that hash, and verifies the full

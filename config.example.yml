@@ -1,3 +1,4 @@
+sync_tracker_label: false
 transmission:
   url: http://transmission.example.invalid:9091/transmission/rpc
 sonarr:

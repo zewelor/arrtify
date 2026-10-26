@@ -25,14 +25,31 @@ type Rule struct {
 	MaxSeedTime *Duration `yaml:"max_seed_time,omitempty"`
 }
 type Config struct {
-	Transmission   Endpoint    `yaml:"transmission"`
-	Sonarr         Endpoint    `yaml:"sonarr"`
-	Radarr         Endpoint    `yaml:"radarr"`
-	IgnoreTrackers []string    `yaml:"ignore_trackers"`
-	Rules          []Rule      `yaml:"rules"`
-	Credentials    Credentials `yaml:"-" json:"-"`
+	SyncTrackerLabel yamlBool    `yaml:"sync_tracker_label"`
+	Transmission     Endpoint    `yaml:"transmission"`
+	Sonarr           Endpoint    `yaml:"sonarr"`
+	Radarr           Endpoint    `yaml:"radarr"`
+	IgnoreTrackers   []string    `yaml:"ignore_trackers"`
+	Rules            []Rule      `yaml:"rules"`
+	Credentials      Credentials `yaml:"-" json:"-"`
 }
 type Credentials struct{ TransmissionUser, TransmissionPassword, SonarrKey, RadarrKey string }
+
+// yaml/v3 accepts legacy yes/on strings for plain Go booleans. An option
+// enabling writes must use a YAML boolean, including through aliases or merges.
+type yamlBool bool
+
+func (b *yamlBool) UnmarshalYAML(n *yaml.Node) error {
+	if n.Tag != "!!bool" {
+		return errors.New("expected a boolean (true or false)")
+	}
+	var value bool
+	if err := n.Decode(&value); err != nil {
+		return errors.New("invalid boolean")
+	}
+	*b = yamlBool(value)
+	return nil
+}
 
 func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 	if n.Tag != "!!str" || n.Value == "0" {

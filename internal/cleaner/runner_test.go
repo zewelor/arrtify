@@ -46,7 +46,7 @@ func TestRunAbortsBeforeDecisionsOnArrFailure(t *testing.T) {
 	c.Transmission.URL = server.URL + "/transmission/rpc"
 	c.Sonarr.URL = server.URL + "/sonarr"
 	c.Radarr.URL = server.URL + "/radarr"
-	report := Run(context.Background(), c, slog.New(slog.NewJSONHandler(io.Discard, nil)), false)
+	report := Run(context.Background(), c, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	if report.Status != "failed" || report.Scanned != 1 || report.NotAttempted != 1 || report.Errors != 1 || report.Planned != 0 || report.Attempted != 0 || len(report.Decisions) != 1 || report.Decisions[0].Reason != "source_read_failed" {
 		t.Fatalf("unexpected report %+v", report)
 	}

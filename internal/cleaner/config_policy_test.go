@@ -85,6 +85,45 @@ func TestConfigStrict(t *testing.T) {
 	}
 }
 
+func TestConfigTrackerLabelSync(t *testing.T) {
+	b, err := os.ReadFile("../../config.example.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, value   string
+		want, invalid bool
+	}{
+		{"omitted", "", false, false},
+		{"disabled", "false", false, false},
+		{"enabled", "true", true, false},
+		{"null", "null", false, true},
+		{"quoted boolean", `"true"`, false, true},
+		{"legacy yes", "yes", false, true},
+		{"legacy on", "on", false, true},
+		{"number", "1", false, true},
+		{"array", "[]", false, true},
+		{"merged boolean", "merge:true", true, false},
+		{"merged legacy yes", "merge:yes", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := strings.Replace(string(b), "sync_tracker_label: false\n", "", 1)
+			if strings.HasPrefix(tc.value, "merge:") {
+				s += "\n<<: {sync_tracker_label: " + strings.TrimPrefix(tc.value, "merge:") + "}\n"
+			} else if tc.value != "" {
+				s += "\nsync_tracker_label: " + tc.value + "\n"
+			}
+			c, err := ParseConfig(strings.NewReader(s), func(string) (string, bool) { return "test-secret", true })
+			if (err != nil) != tc.invalid {
+				t.Fatalf("error = %v, want invalid %v", err, tc.invalid)
+			}
+			if err == nil && bool(c.SyncTrackerLabel) != tc.want {
+				t.Fatalf("sync = %v, want %v", c.SyncTrackerLabel, tc.want)
+			}
+		})
+	}
+}
+
 func sampleTorrent() Torrent {
 	return Torrent{Hash: strings.Repeat("a", 40), Name: "Synthetic", DownloadDir: "/downloads/sonarr", Ratio: 2, SecondsSeeding: 24 * 3600, Status: 6, LeftUntilDone: 0, MetadataComplete: 1, Trackers: []string{}}
 }

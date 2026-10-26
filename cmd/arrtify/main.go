@@ -31,10 +31,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	configPath := flags.String("config", defaultConfigPath, "path to YAML configuration (ARRTIFY_CONFIG_FILE)")
 	check := flags.Bool("check", false, "validate configuration and required environment without network access")
-	syncLabels := flags.Bool("sync-tracker-label", false, "synchronize the managed ignored-tracker label; cleanup stays read-only")
 	apply := flags.Bool("apply", false, "reserved for the later apply stage (currently rejected)")
 	showHelp := func() {
-		fmt.Fprintln(stdout, "Usage: arrtify --config config.yml [--check | --sync-tracker-label]")
+		fmt.Fprintln(stdout, "Usage: arrtify --config config.yml [--check]")
 		flags.SetOutput(stdout)
 		flags.PrintDefaults()
 		flags.SetOutput(io.Discard)
@@ -47,9 +46,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	mode := "dry-run"
-	if *syncLabels {
-		mode = "label-sync"
-	}
 	if *check {
 		mode = "check"
 	}
@@ -62,14 +58,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	runID := hex.EncodeToString(id)
-	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+	baseLogger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 		if a.Key == slog.TimeKey {
 			a.Value = slog.TimeValue(a.Value.Time().UTC())
 		}
 		return a
-	}})).With("run_id", runID, "mode", mode, "app_version", version)
+	}})).With("run_id", runID, "app_version", version)
+	logger := baseLogger.With("mode", mode)
 	report := cleaner.RunReport{Status: "complete", Decisions: []cleaner.Decision{}}
-	logger.Info("run started", "event", "run_started")
 	finish := func(code int) int {
 		report.RunID = runID
 		report.Mode = mode
@@ -113,6 +109,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	invalid := func(message string) int {
+		logger.Info("run started", "event", "run_started")
 		report.Status = "failed"
 		report.Errors = 1
 		logger.Error(message, "event", "configuration_failed")
@@ -120,9 +117,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if parseErr != nil || flags.NArg() != 0 {
 		return invalid("invalid command-line arguments; use --help")
-	}
-	if *check && *syncLabels {
-		return invalid("--check and --sync-tracker-label are mutually exclusive")
 	}
 	if *check && *apply {
 		return invalid("--check and --apply are mutually exclusive")
@@ -142,6 +136,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if closeErr != nil {
 		return invalid("cannot close configuration file")
 	}
+	if bool(c.SyncTrackerLabel) && !*check {
+		mode = "label-sync"
+		logger = baseLogger.With("mode", mode)
+	}
+	logger.Info("run started", "event", "run_started")
 	if *check {
 		return finish(0)
 	}
@@ -149,7 +148,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 270*time.Second)
 	defer cancel()
-	report = cleaner.Run(ctx, c, logger, *syncLabels)
+	report = cleaner.Run(ctx, c, logger)
 	if report.Errors != 0 {
 		return finish(1)
 	}
