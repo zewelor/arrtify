@@ -15,8 +15,8 @@ API compatibility or activation.
 - Category comes from the final DownloadDir component, never Transmission labels.
   Arr protects every nonempty downloadId in both complete queues, in every status.
   Missing or invalid decision data is an error, never an empty queue or a zero.
-- YAML `dry_run` defaults to true and blocks every write at planning/execution
-  and RPC boundaries. Metadata writes require `dry_run: false` plus
+- ENV-only `ARRTIFY_DRY_RUN` defaults to true and blocks every write at planning/execution
+  and RPC boundaries; reject a YAML `dry_run` field. Metadata writes require `ARRTIFY_DRY_RUN=false` plus
   `sync_tracker_label: true`: manage
   `arrtify:ignored-tracker`, refresh before each single-hash write, preserve other
   labels, confirm readback, and stop on uncertain results without retry.

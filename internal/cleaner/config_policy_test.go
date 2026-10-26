@@ -8,13 +8,22 @@ import (
 	"time"
 )
 
+func testCredentialsLookup(name string) (string, bool) {
+	switch name {
+	case "TRANSMISSION_USER", "TRANSMISSION_PASSWORD", "SONARR_API_KEY", "RADARR_API_KEY":
+		return "test-secret", true
+	default:
+		return "", false
+	}
+}
+
 func testConfig(t *testing.T) Config {
 	t.Helper()
 	b, err := os.ReadFile("../../config.example.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := ParseConfig(strings.NewReader(string(b)), func(string) (string, bool) { return "test-secret", true })
+	c, err := ParseConfig(strings.NewReader(string(b)), testCredentialsLookup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +71,7 @@ func TestConfigStrict(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ParseConfig(strings.NewReader(change(valid)), func(string) (string, bool) { return "test-secret", true })
+			_, err := ParseConfig(strings.NewReader(change(valid)), testCredentialsLookup)
 			if err == nil {
 				t.Fatal("accepted invalid config")
 			}
@@ -79,7 +88,7 @@ func TestConfigStrict(t *testing.T) {
 	if err == nil {
 		t.Fatal("missing credentials accepted")
 	}
-	_, err = ParseConfig(strings.NewReader(strings.ReplaceAll(strings.ReplaceAll(valid, "ratio: 2", "ratio: 0"), "24h", "0h")), func(string) (string, bool) { return "x", true })
+	_, err = ParseConfig(strings.NewReader(strings.ReplaceAll(strings.ReplaceAll(valid, "ratio: 2", "ratio: 0"), "24h", "0h")), testCredentialsLookup)
 	if err != nil {
 		t.Fatalf("explicit zero: %v", err)
 	}
@@ -113,7 +122,7 @@ func TestConfigTrackerLabelSync(t *testing.T) {
 			} else if tc.value != "" {
 				s += "\nsync_tracker_label: " + tc.value + "\n"
 			}
-			c, err := ParseConfig(strings.NewReader(s), func(string) (string, bool) { return "test-secret", true })
+			c, err := ParseConfig(strings.NewReader(s), testCredentialsLookup)
 			if (err != nil) != tc.invalid {
 				t.Fatalf("error = %v, want invalid %v", err, tc.invalid)
 			}
@@ -133,38 +142,50 @@ func TestConfigDryRunDefaultsToReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		value         string
-		want, invalid bool
+		name, value        string
+		set, want, invalid bool
 	}{
-		{"", true, false}, {"true", true, false}, {"false", false, false},
-		{"null", true, true}, {`"false"`, true, true}, {"off", true, true},
+		{"unset", "", false, true, false}, {"true", "true", true, true, false}, {"false", "false", true, false, false},
+		{"empty", "", true, true, true}, {"quoted", `"false"`, true, true, true}, {"legacy", "off", true, true, true},
+		{"uppercase", "FALSE", true, true, true}, {"number", "0", true, true, true}, {"whitespace", "false ", true, true, true},
+		{"redacted", "config-secret-canary", true, true, true},
 	} {
-		t.Run("dry_run="+tc.value, func(t *testing.T) {
-			s := strings.Replace(string(b), "dry_run: true\n", "", 1)
-			if tc.value != "" {
-				s += "\ndry_run: " + tc.value + "\n"
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := func(name string) (string, bool) {
+				if name == "ARRTIFY_DRY_RUN" {
+					return tc.value, tc.set
+				}
+				return testCredentialsLookup(name)
 			}
-			c, err := ParseConfig(strings.NewReader(s), func(string) (string, bool) { return "test-secret", true })
+			c, err := ParseConfig(strings.NewReader(string(b)), lookup)
 			if (err != nil) != tc.invalid {
-				t.Fatalf("error = %v, invalid=%v", err, tc.invalid)
+				t.Fatalf("error=%v, invalid=%v", err, tc.invalid)
+			}
+			if err != nil && strings.Contains(err.Error(), "config-secret-canary") {
+				t.Fatal("environment value leaked")
 			}
 			if err == nil && c.IsDryRun() != tc.want {
 				t.Fatalf("dry-run=%v, want %v", c.IsDryRun(), tc.want)
 			}
 		})
 	}
+	for _, value := range []string{"true", "false"} {
+		if _, err := ParseConfig(strings.NewReader(string(b)+"\ndry_run: "+value+"\n"), testCredentialsLookup); err == nil {
+			t.Fatalf("YAML dry_run=%s accepted", value)
+		}
+	}
 }
 
 func TestRunModeDependsOnlyOnGlobalDryRun(t *testing.T) {
-	on, off := yamlBool(true), yamlBool(false)
+	on, off := true, false
 	for _, tc := range []struct {
-		dryRun *yamlBool
+		dryRun *bool
 		mode   string
 	}{
 		{nil, "dry-run"}, {&on, "dry-run"}, {&off, "apply"},
 	} {
 		for _, syncEnabled := range []yamlBool{false, true} {
-			c := Config{DryRun: tc.dryRun, SyncTrackerLabel: syncEnabled}
+			c := Config{dryRun: tc.dryRun, SyncTrackerLabel: syncEnabled}
 			if got := c.RunMode(); got != tc.mode {
 				t.Fatalf("sync=%v, mode=%s, want %s", syncEnabled, got, tc.mode)
 			}
@@ -269,7 +290,7 @@ func TestInvalidTorrent(t *testing.T) {
 func FuzzConfig(f *testing.F) {
 	f.Add("rules: []\n")
 	f.Fuzz(func(t *testing.T, s string) {
-		_, _ = ParseConfig(strings.NewReader(s), func(string) (string, bool) { return "x", true })
+		_, _ = ParseConfig(strings.NewReader(s), testCredentialsLookup)
 	})
 }
 func FuzzCategory(f *testing.F) {
@@ -306,7 +327,7 @@ func TestConfigServicePaths(t *testing.T) {
 	}
 	for _, base := range []string{"http://example.invalid/prefix", "http://127.0.0.1:8080/prefix", "https://[::1]:443/prefix/"} {
 		s := strings.ReplaceAll(string(b), "http://sonarr.example.invalid:8989", base)
-		if _, err := ParseConfig(strings.NewReader(s), func(string) (string, bool) { return "x", true }); err != nil {
+		if _, err := ParseConfig(strings.NewReader(s), testCredentialsLookup); err != nil {
 			t.Errorf("valid base %s: %v", base, err)
 		}
 	}

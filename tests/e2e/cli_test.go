@@ -583,7 +583,7 @@ func TestTrackerLabelDryRun(t *testing.T) {
 
 func TestGlobalDryRunOverridesTrackerLabelSync(t *testing.T) {
 	for _, value := range []string{"", "true"} {
-		t.Run("dry_run="+value, func(t *testing.T) {
+		t.Run("ARRTIFY_DRY_RUN="+value, func(t *testing.T) {
 			fixture := &apiFixture{syncTrackerLabels: true, labels: map[string][]string{}}
 			result := recordScenario(t, "global dry-run suppresses enabled label sync", fixture)
 			server := httptest.NewServer(http.HandlerFunc(fixture.serve))
@@ -594,14 +594,14 @@ func TestGlobalDryRunOverridesTrackerLabelSync(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)
-			s = strings.Replace(s, "dry_run: true\n", "", 1)
-			if value != "" {
-				s += "\ndry_run: " + value + "\n"
-			}
 			if err := os.WriteFile(config, []byte(s), 0600); err != nil {
 				t.Fatal(err)
 			}
-			out, logs, code := runCLIWithConfig(t, config)
+			var env []string
+			if value != "" {
+				env = []string{"ARRTIFY_DRY_RUN=" + value}
+			}
+			out, logs, code := runCLIWithConfigEnv(t, config, env)
 			result.Exit = code
 			result.Report = verifyOutput(t, out, logs, code)
 			if code != 0 || result.Report.Mode != "dry-run" || result.Report.Status != "complete" || result.Report.TrackerLabelsPlanned != 1 || result.Report.TrackerLabelsChanged != 0 || !result.Report.DryRun || !result.Report.SyncTrackerLabel || fixture.mutations.Load() != 0 {
@@ -632,13 +632,13 @@ func TestTrackerLabelSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(config, []byte(strings.Replace(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1), "dry_run: true", "dry_run: false", 1)), 0600); err != nil {
+	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("adds and removes only the managed label", func(t *testing.T) {
 		result := recordScenario(t, "tracker label sync adds and removes managed tag", fixture)
-		out, logs, code := runCLIWithConfig(t, config)
+		out, logs, code := runCLIWithConfigEnv(t, config, []string{"ARRTIFY_DRY_RUN=false"})
 		result.Exit = code
 		result.Report = verifyOutput(t, out, logs, code)
 		payload := decodeReportPayload(t, out)
@@ -679,7 +679,7 @@ func TestTrackerLabelSync(t *testing.T) {
 	t.Run("second run performs no unnecessary mutation", func(t *testing.T) {
 		result := recordScenario(t, "tracker label sync second run is unchanged", fixture)
 		callsBefore := len(fixture.rpcCallSnapshot())
-		out, logs, code := runCLIWithConfig(t, config)
+		out, logs, code := runCLIWithConfigEnv(t, config, []string{"ARRTIFY_DRY_RUN=false"})
 		result.Exit = code
 		result.Report = verifyOutput(t, out, logs, code)
 		payload := decodeReportPayload(t, out)
@@ -711,14 +711,53 @@ func TestTrackerLabelCheckDoesNotAccessServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(config, []byte(strings.Replace(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1), "dry_run: true", "dry_run: false", 1)), 0600); err != nil {
+	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sync_tracker_label: false", "sync_tracker_label: true", 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	out, logs, code := runCLIWithConfig(t, config, "--check")
+	out, logs, code := runCLIWithConfigEnv(t, config, []string{"ARRTIFY_DRY_RUN=false"}, "--check")
 	result.Exit = code
 	result.Report = verifyOutput(t, out, logs, code)
 	if code != 0 || result.Report.Mode != "check" || result.Report.Status != "complete" || fixture.requests.Load() != 0 || fixture.mutations.Load() != 0 {
 		t.Fatalf("exit %d, requests=%d mutations=%d report=%+v\n%s", code, fixture.requests.Load(), fixture.mutations.Load(), result.Report, logs)
+	}
+}
+
+func TestInvalidDryRunEnvironmentDoesNotAccessServices(t *testing.T) {
+	for _, value := range []string{"", "FALSE", "1", "config-secret-canary"} {
+		t.Run("value="+value, func(t *testing.T) {
+			fixture := &apiFixture{}
+			result := recordScenario(t, "invalid dry-run environment rejected before network", fixture)
+			server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+			defer server.Close()
+			config := configFile(t, server.URL, false)
+			out, logs, code := runCLIWithConfigEnv(t, config, []string{"ARRTIFY_DRY_RUN=" + value})
+			result.Exit = code
+			result.Report = verifyOutput(t, out, logs, code)
+			if code != 2 || result.Report.Status != "failed" || fixture.requests.Load() != 0 || fixture.mutations.Load() != 0 {
+				t.Fatalf("exit=%d requests=%d mutations=%d report=%+v", code, fixture.requests.Load(), fixture.mutations.Load(), result.Report)
+			}
+		})
+	}
+}
+
+func TestYAMLDryRunRejectedEvenWithEnvironment(t *testing.T) {
+	fixture := &apiFixture{}
+	result := recordScenario(t, "YAML cannot configure dry-run even with environment set", fixture)
+	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+	defer server.Close()
+	config := configFile(t, server.URL, false)
+	data, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, append(data, []byte("\ndry_run: false\n")...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, logs, code := runCLIWithConfigEnv(t, config, []string{"ARRTIFY_DRY_RUN=true"})
+	result.Exit = code
+	result.Report = verifyOutput(t, out, logs, code)
+	if code != 2 || result.Report.Status != "failed" || fixture.requests.Load() != 0 || fixture.mutations.Load() != 0 {
+		t.Fatalf("exit=%d requests=%d mutations=%d report=%+v", code, fixture.requests.Load(), fixture.mutations.Load(), result.Report)
 	}
 }
 
@@ -729,11 +768,16 @@ func runCLI(t *testing.T, url string, args ...string) ([]byte, []byte, int) {
 
 func runCLIWithConfig(t *testing.T, config string, args ...string) ([]byte, []byte, int) {
 	t.Helper()
+	return runCLIWithConfigEnv(t, config, nil, args...)
+}
+
+func runCLIWithConfigEnv(t *testing.T, config string, env []string, args ...string) ([]byte, []byte, int) {
+	t.Helper()
 	commandArgs := append([]string{"--config", config}, args...)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, commandArgs...)
-	cmd.Env = cliEnv()
+	cmd.Env = append(cliEnv(), env...)
 	var out, logs bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &logs

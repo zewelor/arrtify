@@ -25,7 +25,7 @@ type Rule struct {
 	MaxSeedTime *Duration `yaml:"max_seed_time,omitempty"`
 }
 type Config struct {
-	DryRun           *yamlBool   `yaml:"dry_run"`
+	dryRun           *bool
 	SyncTrackerLabel yamlBool    `yaml:"sync_tracker_label"`
 	Transmission     Endpoint    `yaml:"transmission"`
 	Sonarr           Endpoint    `yaml:"sonarr"`
@@ -36,7 +36,7 @@ type Config struct {
 }
 
 // IsDryRun also defaults to true for configurations built directly in Go.
-func (c Config) IsDryRun() bool { return c.DryRun == nil || bool(*c.DryRun) }
+func (c Config) IsDryRun() bool { return c.dryRun == nil || *c.dryRun }
 
 func (c Config) ShouldSyncTrackerLabel() bool {
 	return !c.IsDryRun() && bool(c.SyncTrackerLabel)
@@ -152,6 +152,13 @@ func ParseConfig(r io.Reader, lookup func(string) (string, bool)) (Config, error
 			return Config{}, errors.New("invalid ignored tracker hostname")
 		}
 		c.IgnoreTrackers[i] = normalized
+	}
+	if value, set := lookup("ARRTIFY_DRY_RUN"); set {
+		if value != "true" && value != "false" {
+			return Config{}, errors.New("ARRTIFY_DRY_RUN must be true or false")
+		}
+		enabled := value == "true"
+		c.dryRun = &enabled
 	}
 	for _, entry := range []struct {
 		name string
