@@ -26,7 +26,7 @@ prevent the final report.
 ## Policy
 
 Category is the final component of Transmission's absolute `download_dir`,
-ignoring case and trailing slashes. Transmission labels have no effect. The
+ignoring case and trailing slashes. Transmission labels do not select cleanup rules. The
 first rule matching the category wins. Its condition is:
 
 ```text
@@ -100,6 +100,72 @@ Fresh reads narrow the race window; the three services do not offer one atomic
 transaction. Run one cleanup owner and avoid concurrent category/path changes.
 When replacing another cleanup tool, durably disable and stop it before
 enabling Arrtify writes. Publishing an image does not activate cleanup.
+
+## Import reports
+
+Enable optional, read-only reporting with the post-import category configured
+in each Arr application's Transmission client:
+
+```yaml
+sonarr:
+  url: http://sonarr.example.invalid:8989
+  imported_label: sonarr-imported
+radarr:
+  url: http://radarr.example.invalid:7878
+  imported_label: radarr-imported
+```
+
+The label names above are examples. Each service's `imported_label` is independent;
+omitting it or setting it to an empty string disables that service's report.
+Labels match case-insensitively. Values must be strings without surrounding
+whitespace or control characters. Configured names appear as
+`sonarr_imported_label` / `radarr_imported_label` in run reports and logs.
+Transmission's download-directory category still selects cleanup rules.
+
+At startup, including offline `--check`, an `INFO` event named `import_reporting`
+states whether reporting is enabled for each service. `enabled`, `label`, and
+`setting` identify the configured state and the relevant YAML setting. A disabled
+report explains that `imported_label` is not configured; this is informational,
+not a warning or an execution-mode change. Existing cleanup rules still apply.
+
+Only torrents carrying the configured label receive a `sonarr_import` or
+`radarr_import` decision object in JSON and logs. If none match, no extra API
+requests are made for that service. Arrtify matches `downloadFolderImported`
+history events by exact torrent hash, ignoring hash case. It never guesses from
+titles, filenames or paths.
+
+Radarr compares the imported `data.fileId` with the movie's current `movieFileId`.
+Sonarr reads current episodes for each referenced series once and compares the
+imported file IDs with `episodeFileId`. Identical import references are deduplicated;
+multiple episodes sharing one file are supported.
+
+| State | Radarr | Sonarr |
+| --- | --- | --- |
+| `current` | The movie still references the imported file ID. | At least one known imported episode still references its imported file ID. |
+| `replaced` | The movie references a different, nonzero file ID. | Every known imported episode references a different, nonzero file ID. |
+| `unknown` | History or the current movie/file is absent, or import references conflict. | History or required episode/file references are absent, or one episode has conflicting import references. |
+
+The `reason` field explains the result: both services use `no_import_history` and
+`ambiguous_import_history`; Radarr uses `current_file`, `different_current_file`,
+`movie_missing`, and `movie_file_missing`. Sonarr uses `current_episode_file`,
+`different_current_files`, `episode_missing`, and `episode_file_missing`.
+Conflicting imports take precedence over other states. Otherwise, a current
+Sonarr reference keeps `current` even when another known episode is missing;
+without one, a missing episode/file yields `unknown` rather than `replaced`.
+
+An unambiguous Radarr import includes its `movie_id` and `file_id`. Sonarr includes
+`imported_episodes`, the number of distinct episodes in the matching history.
+That count does not prove the complete contents of a season pack were imported
+or remain represented in retained history. Deleting a movie/series also removes
+its history; an imported label can legitimately have no matching history.
+Neither report proves physical hardlink state or tracks an independent copy.
+
+These fields describe initial planning reads and do not change cleanup
+eligibility or thresholds. `unknown` does not protect a torrent from an existing
+category rule, and `current` does not promise retention. Cleanup `outcome` and
+its `unknown` counter remain separate. Failed or malformed enabled API reads
+fail the run before writes; ordinary absence or ambiguity yields informational
+`unknown`. Dry-run blocks every write, and `--check` stays offline.
 
 ## Ignored-tracker label
 

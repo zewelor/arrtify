@@ -95,6 +95,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			report.Errors,
 			"dry_run", report.DryRun,
 			"sync_tracker_label", report.SyncTrackerLabel,
+			"radarr_imported_label", report.RadarrImportedLabel,
+			"sonarr_imported_label", report.SonarrImportedLabel,
 			"tracker_labels_planned", report.TrackerLabelsPlanned,
 			"tracker_labels_changed", report.TrackerLabelsChanged,
 			"duration_seconds",
@@ -130,11 +132,33 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	report.DryRun = c.IsDryRun()
 	report.SyncTrackerLabel = bool(c.SyncTrackerLabel)
+	report.RadarrImportedLabel = string(c.Radarr.ImportedLabel)
+	report.SonarrImportedLabel = string(c.Sonarr.ImportedLabel)
 	if !*check {
 		mode = c.RunMode()
 		logger = baseLogger.With("mode", mode)
 	}
-	logger.Info("run started", "event", "run_started", "dry_run", report.DryRun, "sync_tracker_label", report.SyncTrackerLabel)
+	logger.Info("run started", "event", "run_started", "dry_run", report.DryRun,
+		"sync_tracker_label", report.SyncTrackerLabel,
+		"radarr_imported_label", report.RadarrImportedLabel, "sonarr_imported_label", report.SonarrImportedLabel)
+	for _, service := range []struct{ name, label string }{
+		{name: "sonarr", label: report.SonarrImportedLabel},
+		{name: "radarr", label: report.RadarrImportedLabel},
+	} {
+		enabled := service.label != ""
+		message := "import reporting enabled"
+		if !enabled {
+			message = "import reporting disabled: imported_label is not configured"
+		}
+		logger.Info(
+			message,
+			"event", "import_reporting",
+			"service", service.name,
+			"enabled", enabled,
+			"setting", service.name+".imported_label",
+			"label", service.label,
+		)
+	}
 	if *check {
 		return finish(0)
 	}

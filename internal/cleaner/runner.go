@@ -9,11 +9,13 @@ import (
 // Run plans all decisions before writes, then applies labels and cleanup in order.
 func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
 	report := RunReport{
-		Mode:             c.RunMode(),
-		DryRun:           c.IsDryRun(),
-		SyncTrackerLabel: bool(c.SyncTrackerLabel),
-		Status:           "complete",
-		Decisions:        []Decision{},
+		Mode:                c.RunMode(),
+		DryRun:              c.IsDryRun(),
+		SyncTrackerLabel:    bool(c.SyncTrackerLabel),
+		RadarrImportedLabel: string(c.Radarr.ImportedLabel),
+		SonarrImportedLabel: string(c.Sonarr.ImportedLabel),
+		Status:              "complete",
+		Decisions:           []Decision{},
 	}
 	rpc, err := newTransmissionRPC(ctx, c)
 	var torrents []Torrent
@@ -42,13 +44,21 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
 		logger.Error("source read failed", "event", "source_read_failed", "service", service, "error", err)
 		return report
 	}
-	sonarr, err := ReadQueue(ctx, c.Sonarr, c.Credentials.SonarrKey, "sonarr")
+	sonarr, err := ReadQueue(ctx, c.Sonarr.Endpoint, c.Credentials.SonarrKey, "sonarr")
 	if err != nil {
 		return fail("sonarr", err)
 	}
-	radarr, err := ReadQueue(ctx, c.Radarr, c.Credentials.RadarrKey, "radarr")
+	radarr, err := ReadQueue(ctx, c.Radarr.Endpoint, c.Credentials.RadarrKey, "radarr")
 	if err != nil {
 		return fail("radarr", err)
+	}
+	radarrImports, err := readRadarrImports(ctx, c, torrents)
+	if err != nil {
+		return fail("radarr", err)
+	}
+	sonarrImports, err := readSonarrImports(ctx, c, torrents)
+	if err != nil {
+		return fail("sonarr", err)
 	}
 	decisions := make([]Decision, 0, len(torrents))
 	for _, torrent := range torrents {
@@ -61,6 +71,8 @@ func Run(ctx context.Context, c Config, logger *slog.Logger) RunReport {
 			return fail("policy", err)
 		}
 		decision.TrackerLabel = &label
+		decision.RadarrImport = radarrImports[torrent.Hash]
+		decision.SonarrImport = sonarrImports[torrent.Hash]
 		decisions = append(decisions, decision)
 	}
 	if err := ctx.Err(); err != nil {
@@ -121,12 +133,12 @@ func applyCleanup(ctx context.Context, rpc *transmissionRPC, c Config, report *R
 			d.Outcome, d.Reason = "skipped", "torrent_missing"
 			continue
 		}
-		sonarr, err := ReadQueue(ctx, c.Sonarr, c.Credentials.SonarrKey, "sonarr")
+		sonarr, err := ReadQueue(ctx, c.Sonarr.Endpoint, c.Credentials.SonarrKey, "sonarr")
 		if err != nil {
 			cleanupFailure(report, d, logger, err)
 			return
 		}
-		radarr, err := ReadQueue(ctx, c.Radarr, c.Credentials.RadarrKey, "radarr")
+		radarr, err := ReadQueue(ctx, c.Radarr.Endpoint, c.Credentials.RadarrKey, "radarr")
 		if err != nil {
 			cleanupFailure(report, d, logger, err)
 			return
@@ -140,6 +152,8 @@ func applyCleanup(ctx context.Context, rpc *transmissionRPC, c Config, report *R
 			decision.Outcome, decision.Reason = "skipped", "category_changed"
 		}
 		decision.TrackerLabel = d.TrackerLabel
+		decision.RadarrImport = d.RadarrImport
+		decision.SonarrImport = d.SonarrImport
 		*d = decision
 		if d.Outcome != "would_delete" {
 			continue
@@ -213,6 +227,12 @@ func logDecision(logger *slog.Logger, d Decision) {
 	}
 	if d.TrackerLabel != nil {
 		attrs = append(attrs, "tracker_label", d.TrackerLabel)
+	}
+	if d.RadarrImport != nil {
+		attrs = append(attrs, "radarr_import", d.RadarrImport)
+	}
+	if d.SonarrImport != nil {
+		attrs = append(attrs, "sonarr_import", d.SonarrImport)
 	}
 	logger.Info("torrent decision", attrs...)
 }

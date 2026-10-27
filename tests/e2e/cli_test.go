@@ -257,7 +257,86 @@ func (f *apiFixture) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "api-secret-canary", 403)
 		return
 	}
-	if r.Method != "GET" || r.Header.Get("X-Api-Key") != "api-secret-canary" || !strings.HasSuffix(r.URL.Path, "/api/v3/queue") {
+	if r.Method != "GET" || r.Header.Get("X-Api-Key") != "api-secret-canary" {
+		http.Error(w, "invalid request", 400)
+		return
+	}
+	if r.URL.Path == "/radarr/api/v3/history" {
+		if f.failService == "radarr_history" {
+			http.Error(w, "api-secret-canary", http.StatusServiceUnavailable)
+			return
+		}
+		records := []any{
+			map[string]any{"id": 1, "eventType": "downloadFolderImported", "downloadId": hashFor('a'),
+				"movieId": 10, "data": map[string]string{"fileId": "1"}},
+			map[string]any{"id": 2, "eventType": "downloadFolderImported", "downloadId": hashFor('b'),
+				"movieId": 11, "data": map[string]string{"fileId": "3"}},
+			map[string]any{"id": 3, "eventType": "grabbed", "downloadId": hashFor('d')},
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"page": 1, "pageSize": 100, "sortKey": "date", "sortDirection": "descending",
+			"totalRecords": len(records), "records": records,
+		})
+		return
+	}
+	if r.URL.Path == "/radarr/api/v3/movie" {
+		_ = json.NewEncoder(w).Encode([]any{
+			map[string]int{"id": 10, "movieFileId": 2}, map[string]int{"id": 11, "movieFileId": 3},
+		})
+		return
+	}
+	if r.URL.Path == "/sonarr/api/v3/history" {
+		if f.failService == "sonarr_history" {
+			http.Error(w, "api-secret-canary", http.StatusServiceUnavailable)
+			return
+		}
+		records := []any{}
+		for id, ref := range []struct {
+			hash                  byte
+			series, episode, file int
+		}{
+			{hash: 'b', series: 42, episode: 101, file: 500},
+			{hash: 'b', series: 42, episode: 102, file: 501},
+			{hash: 'f', series: 43, episode: 201, file: 700},
+			{hash: 'f', series: 43, episode: 202, file: 700},
+		} {
+			records = append(records, map[string]any{
+				"id": id + 1, "eventType": "downloadFolderImported", "downloadId": hashFor(ref.hash),
+				"seriesId": ref.series, "episodeId": ref.episode,
+				"data": map[string]string{"fileId": strconv.Itoa(ref.file)},
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"page": 1, "pageSize": 100, "sortKey": "date", "sortDirection": "descending",
+			"totalRecords": len(records), "records": records,
+		})
+		return
+	}
+	if r.URL.Path == "/sonarr/api/v3/episode" {
+		if f.failService == "sonarr_episode" {
+			http.Error(w, "api-secret-canary", http.StatusServiceUnavailable)
+			return
+		}
+		episodes := []any{}
+		switch r.URL.Query().Get("seriesId") {
+		case "42":
+			episodes = []any{
+				map[string]int{"id": 101, "seriesId": 42, "episodeFileId": 500},
+				map[string]int{"id": 102, "seriesId": 42, "episodeFileId": 600},
+			}
+		case "43":
+			episodes = []any{
+				map[string]int{"id": 201, "seriesId": 43, "episodeFileId": 701},
+				map[string]int{"id": 202, "seriesId": 43, "episodeFileId": 701},
+			}
+		default:
+			http.Error(w, "invalid seriesId", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(episodes)
+		return
+	}
+	if !strings.HasSuffix(r.URL.Path, "/api/v3/queue") {
 		http.Error(w, "invalid request", 400)
 		return
 	}
@@ -547,7 +626,7 @@ func verifyOutput(t *testing.T, out, logs []byte, code int) cleaner.RunReport {
 					t.Fatalf("summary/report mismatch for %s", key)
 				}
 			}
-			for _, key := range []string{"tracker_labels_planned", "tracker_labels_changed", "dry_run", "sync_tracker_label"} {
+			for _, key := range []string{"tracker_labels_planned", "tracker_labels_changed", "dry_run", "sync_tracker_label", "radarr_imported_label", "sonarr_imported_label"} {
 				if _, present := payload[key]; present && !reflect.DeepEqual(event[key], payload[key]) {
 					t.Fatalf("summary/report mismatch for %s", key)
 				}
@@ -559,7 +638,7 @@ func verifyOutput(t *testing.T, out, logs []byte, code int) cleaner.RunReport {
 			if !ok {
 				t.Fatalf("logged unknown decision %s", hash)
 			}
-			for _, key := range []string{"upload_ratio", "upload_ratio_kind", "seed_time_seconds", "seed_time", "rule", "criteria"} {
+			for _, key := range []string{"upload_ratio", "upload_ratio_kind", "seed_time_seconds", "seed_time", "rule", "criteria", "radarr_import", "sonarr_import"} {
 				actual, logged := event[key]
 				wanted, present := want[key]
 				if logged != present || !reflect.DeepEqual(actual, wanted) {
@@ -576,6 +655,167 @@ func verifyOutput(t *testing.T, out, logs []byte, code int) cleaner.RunReport {
 		t.Fatalf("events: %v", events)
 	}
 	return report
+}
+
+func TestImportReportingStartupStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels map[string]string
+		check  bool
+	}{
+		{name: "both omitted"},
+		{name: "Sonarr configured in offline check", labels: map[string]string{"sonarr": "tv-finished", "radarr": ""}, check: true},
+		{name: "Radarr configured and Sonarr empty", labels: map[string]string{"sonarr": "", "radarr": "movies-finished"}},
+		{name: "both configured", labels: map[string]string{"sonarr": "tv-finished", "radarr": "movies-finished"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := &apiFixture{}
+			result := recordScenario(t, "import reporting startup: "+tc.name, fixture)
+			server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+			defer server.Close()
+			config := configFile(t, server.URL, false)
+			data, err := os.ReadFile(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(data)
+			for service, label := range tc.labels {
+				text = strings.Replace(text, service+":\n", service+":\n  imported_label: "+strconv.Quote(label)+"\n", 1)
+			}
+			if err := os.WriteFile(config, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{}
+			if tc.check {
+				args = append(args, "--check")
+			}
+			out, logs, code := runCLIWithConfig(t, config, args...)
+			result.Exit = code
+			result.Report = verifyOutput(t, out, logs, code)
+			if code != 0 || result.Report.Status != "complete" || fixture.mutations.Load() != 0 {
+				t.Fatalf("startup status changed execution: %+v", result.Report)
+			}
+			if tc.check && fixture.requests.Load() != 0 {
+				t.Fatal("offline check accessed APIs")
+			}
+			seen := map[string]bool{}
+			decoder := json.NewDecoder(bytes.NewReader(logs))
+			for decoder.More() {
+				var event map[string]any
+				if err := decoder.Decode(&event); err != nil {
+					t.Fatal(err)
+				}
+				if event["event"] != "import_reporting" {
+					continue
+				}
+				service, _ := event["service"].(string)
+				if (service != "sonarr" && service != "radarr") || seen[service] {
+					t.Fatalf("unexpected or duplicate service: %v", event)
+				}
+				label := tc.labels[service]
+				if event["level"] != "INFO" || event["enabled"] != (label != "") || event["label"] != label {
+					t.Fatalf("incorrect reporting status: %v", event)
+				}
+				if event["setting"] != service+".imported_label" {
+					t.Fatalf("missing actionable setting: %v", event)
+				}
+				message, _ := event["msg"].(string)
+				if label == "" && !strings.Contains(message, "not configured") {
+					t.Fatalf("disabled report lacks explanation: %v", event)
+				}
+				seen[service] = true
+			}
+			if len(seen) != 2 {
+				t.Fatalf("expected startup reporting status for both services; got %v", seen)
+			}
+		})
+	}
+}
+
+func TestArrImportReports(t *testing.T) {
+	for _, failure := range []string{"", "radarr_history", "sonarr_history", "sonarr_episode"} {
+		t.Run("failure="+failure, func(t *testing.T) {
+			fixture := &apiFixture{labels: map[string][]string{
+				hashFor('a'): {"movies-finished"}, hashFor('b'): {"MOVIES-FINISHED", "TV-FINISHED"},
+				hashFor('d'): {"movies-finished", "tv-finished", "user:keep"},
+				hashFor('e'): {"radarr-imported"}, hashFor('f'): {"tv-finished"},
+			}}
+			fixture.failService = failure
+			result := recordScenario(t, "read-only Arr import reports "+failure, fixture)
+			server := httptest.NewServer(http.HandlerFunc(fixture.serve))
+			defer server.Close()
+			config := configFile(t, server.URL, false)
+			data, err := os.ReadFile(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := strings.Replace(string(data), "radarr:\n", "radarr:\n  imported_label: movies-finished\n", 1)
+			text = strings.Replace(text, "sonarr:\n", "sonarr:\n  imported_label: tv-finished\n", 1)
+			if err := os.WriteFile(config, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+			env := cliEnv()
+			if failure != "" {
+				env = append(env, "ARRTIFY_DRY_RUN=false")
+			}
+			out, logs, code := runCLIWithConfigEnv(t, config, env)
+			result.Exit = code
+			result.Report = verifyOutput(t, out, logs, code)
+			report := result.Report
+			labelsMatch := report.RadarrImportedLabel == "movies-finished" && report.SonarrImportedLabel == "tv-finished"
+			if !labelsMatch || fixture.mutations.Load() != 0 {
+				t.Fatalf("report=%+v mutations=%d", report, fixture.mutations.Load())
+			}
+			if failure != "" {
+				if code != 1 || report.Status != "failed" || report.NotAttempted != 6 || report.Errors != 1 {
+					t.Fatalf("source failure was not loud: %+v", report)
+				}
+				return
+			}
+			if code != 0 || report.Status != "complete" || report.WouldDelete != 2 || report.Skipped != 4 {
+				t.Fatalf("import reporting changed policy: %+v", report)
+			}
+			for _, decision := range report.Decisions {
+				assessment := decision.RadarrImport
+				switch decision.Hash {
+				case hashFor('a'):
+					if assessment == nil || assessment.State != "replaced" {
+						t.Fatalf("replacement not reported: %+v", assessment)
+					}
+				case hashFor('b'):
+					if assessment == nil || assessment.State != "current" || decision.Reason != "arr_queue" {
+						t.Fatalf("current import or queue protection lost: %+v", decision)
+					}
+				case hashFor('d'):
+					if assessment == nil || assessment.State != "unknown" || decision.Reason != "ignored_tracker" {
+						t.Fatalf("unknown import or tracker protection lost: %+v", decision)
+					}
+				default:
+					if assessment != nil {
+						t.Fatalf("unmarked torrent assessed: %+v", decision)
+					}
+				}
+				switch decision.Hash {
+				case hashFor('b'):
+					if decision.SonarrImport == nil || decision.SonarrImport.State != "current" || decision.SonarrImport.ImportedEpisodes != 2 {
+						t.Fatalf("mixed season pack lost a current file: %+v", decision)
+					}
+				case hashFor('d'):
+					if decision.SonarrImport == nil || decision.SonarrImport.State != "unknown" {
+						t.Fatalf("missing Sonarr history not reported: %+v", decision)
+					}
+				case hashFor('f'):
+					if decision.SonarrImport == nil || decision.SonarrImport.State != "replaced" || decision.SonarrImport.ImportedEpisodes != 2 {
+						t.Fatalf("replaced multi-episode file not reported: %+v", decision)
+					}
+				default:
+					if decision.SonarrImport != nil {
+						t.Fatalf("unmarked Sonarr torrent assessed: %+v", decision)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestCLI(t *testing.T) {

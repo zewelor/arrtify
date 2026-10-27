@@ -11,6 +11,7 @@ queue are protected.
 - Dry-run by default, with every write blocked.
 - Tracker exclusions and optional `arrtify:ignored-tracker` label synchronization.
 - JSON reports and structured logs for each run.
+- Optional import reporting using your Sonarr/Radarr post-import labels.
 - A single process per run, ready for cron or Kubernetes CronJobs. No database or media mounts.
 
 Requires Transmission 4.1.x; uses the Sonarr and Radarr v3 queue APIs.

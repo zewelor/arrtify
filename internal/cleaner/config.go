@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -16,6 +17,10 @@ import (
 type Duration time.Duration
 type Endpoint struct {
 	URL string `yaml:"url"`
+}
+type ArrEndpoint struct {
+	Endpoint      `yaml:",inline"`
+	ImportedLabel yamlLabel `yaml:"imported_label"`
 }
 type Rule struct {
 	Name        string    `yaml:"name"`
@@ -28,8 +33,8 @@ type Config struct {
 	dryRun           *bool
 	SyncTrackerLabel yamlBool    `yaml:"sync_tracker_label"`
 	Transmission     Endpoint    `yaml:"transmission"`
-	Sonarr           Endpoint    `yaml:"sonarr"`
-	Radarr           Endpoint    `yaml:"radarr"`
+	Sonarr           ArrEndpoint `yaml:"sonarr"`
+	Radarr           ArrEndpoint `yaml:"radarr"`
 	IgnoreTrackers   []string    `yaml:"ignore_trackers"`
 	Rules            []Rule      `yaml:"rules"`
 	Credentials      Credentials `yaml:"-" json:"-"`
@@ -64,6 +69,17 @@ func (b *yamlBool) UnmarshalYAML(n *yaml.Node) error {
 		return errors.New("invalid boolean")
 	}
 	*b = yamlBool(value)
+	return nil
+}
+
+type yamlLabel string
+
+func (label *yamlLabel) UnmarshalYAML(n *yaml.Node) error {
+	invalidWhitespace := strings.TrimSpace(n.Value) != n.Value || strings.IndexFunc(n.Value, unicode.IsControl) >= 0
+	if n.Tag != "!!str" || invalidWhitespace {
+		return errors.New("expected a label string without surrounding whitespace or control characters")
+	}
+	*label = yamlLabel(n.Value)
 	return nil
 }
 
@@ -108,7 +124,7 @@ func ParseConfig(r io.Reader, lookup func(string) (string, bool)) (Config, error
 	for _, e := range []struct {
 		name     string
 		endpoint Endpoint
-	}{{"transmission", c.Transmission}, {"sonarr", c.Sonarr}, {"radarr", c.Radarr}} {
+	}{{"transmission", c.Transmission}, {"sonarr", c.Sonarr.Endpoint}, {"radarr", c.Radarr.Endpoint}} {
 		if _, err := parseEndpoint(e.endpoint.URL, e.name == "transmission"); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", e.name, err)
 		}

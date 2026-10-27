@@ -29,6 +29,9 @@ first-rule priority, missing fields, pagination errors, protocol handshakes,
 redirect rejection, bounded reads and cancellation. Test servers and files are
 disposable and contain no production data. API fixtures describe documented
 shapes; they do not prove compatibility with the operator's live services.
+Startup cases also verify one informational import-report status per service,
+including omitted/empty labels, independent custom labels, and offline `--check`
+without API access.
 
 Apply E2E exercises multiple candidates with fresh queues, confirmed absence,
 an uncertain second removal and an unattempted third candidate. Final logs,
@@ -40,6 +43,16 @@ uncertain responses, failed/still-present confirmations and cancellation.
 
 Testing decisions:
 
+- Adopt focused HTTP/CLI cases for the read-only Arr import reports: only the
+  configured imported label selects assessment (custom names, case-insensitive
+  matching, and no hardcoded default); exact hashes (including uppercase
+  history and page two), stable file IDs after moves, replacements, duplicate or
+  conflicting imports, and absent history/movies/files have explicit results.
+  Malformed and failed reads block all writes. The apply case preserves the
+  informational planning snapshot without changing existing cleanup policy.
+  Reuse the queue pagination checks for history. Skip additional fuzzing and a
+  stateful/formal model here: there is no new custom parser, persistent state or
+  write protocol; deterministic HTTP/CLI sequences cover the relevant failures.
 - Adopt table-driven policy/config tests and real `httptest` boundaries for the
   decision and incomplete-read risks. No framework or source-text assertions.
 - Pilot built-in Go fuzzing for strict YAML, category and hostname normalization
@@ -97,6 +110,44 @@ error. Distinct records may carry the same hash; duplicate record IDs and change
 pagination metadata are errors. Complete pagination is not an atomic snapshot.
 Sources: [Sonarr v3 queue](https://github.com/Sonarr/Sonarr/blob/v5-develop/src/Sonarr.Api.V3/Queue/QueueController.cs),
 [Radarr v3 queue](https://github.com/Radarr/Radarr/blob/develop/src/Radarr.Api.V3/Queue/QueueController.cs).
+
+Optional `radarr.imported_label` uses Radarr `GET /api/v3/history` (all pages,
+sorted by date descending) and `GET /api/v3/movie`. History has the same 100,000
+record bound and pagination consistency checks as queues; movie responses retain
+the 16 MiB HTTP bound. Import `data.fileId` is a positive decimal string; movie
+and file IDs must be present, with zero allowed only for a missing current file.
+The report describes Radarr database references, not filesystem identity.
+Contracts were checked against Radarr 6.4.4.10685:
+[history API](https://github.com/Radarr/Radarr/blob/v6.4.4.10685/src/Radarr.Api.V3/History/HistoryController.cs),
+[import history and deletion](https://github.com/Radarr/Radarr/blob/v6.4.4.10685/src/NzbDrone.Core/History/HistoryService.cs),
+[movie resource](https://github.com/Radarr/Radarr/blob/v6.4.4.10685/src/Radarr.Api.V3/Movies/MovieResource.cs),
+[post-import label](https://github.com/Radarr/Radarr/blob/v6.4.4.10685/src/NzbDrone.Core/Download/Clients/Transmission/Transmission.cs).
+Optional `sonarr.imported_label` uses the same history reader and
+`GET /api/v3/episode?seriesId=...` once per referenced series. Episode arrays are
+bounded by the same 16 MiB HTTP limit; required episode/series/file IDs and
+uniqueness are validated. Conflicting imports for one episode are unknown;
+otherwise any current known reference yields current, and replaced requires
+different nonzero current IDs for every known reference. Retained history does
+not prove complete import coverage of a torrent. Synthetic cases cover season
+packs, shared multi-episode files, partial replacement, absent/ambiguous refs,
+case-insensitive custom labels, and failures blocking apply. Reuse deterministic
+HTTP/CLI tests rather than introduce stateful/formal tooling for this read-only
+projection; it adds no persistent state or write protocol.
+
+Sonarr contracts were checked against the GitOps-pinned 5.0.0.2800 source:
+[import history](https://github.com/Sonarr/Sonarr/blob/a6171f0ca61b2a76ec529da3e9aadb11435344f9/src/NzbDrone.Core/History/HistoryService.cs),
+[episode API](https://github.com/Sonarr/Sonarr/blob/a6171f0ca61b2a76ec529da3e9aadb11435344f9/src/Sonarr.Api.V3/Episodes/EpisodeController.cs),
+[episode resource](https://github.com/Sonarr/Sonarr/blob/a6171f0ca61b2a76ec529da3e9aadb11435344f9/src/Sonarr.Api.V3/Episodes/EpisodeResource.cs).
+Synthetic tests do not prove a real Arr import or Storage Box hardlink state.
+
+Read-only compatibility on 2026-10-27: the local CLI used the deployed config
+with reporting enabled and service addresses forwarded to loopback. Forced
+`ARRTIFY_DRY_RUN=true` produced `complete`, zero removal attempts and zero label
+changes. Both current torrents carried `radarr-imported` and reported
+`unknown/no_import_history`; the second retained ignored-tracker protection.
+Local evidence is `artifacts/radarr-import-live-proof.json` (not a test fixture).
+This proves the observed API shapes and missing-history case, not a real
+import/replacement sequence. No production configuration was changed.
 
 Service URL paths may include a reverse-proxy prefix. Transmission URLs end in
 `/transmission/rpc`; Arr URLs are service base URLs. Credentials, queries and

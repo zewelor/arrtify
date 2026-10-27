@@ -3,6 +3,8 @@ package cleaner
 type RunReport struct {
 	DryRun               bool       `json:"dry_run"`
 	SyncTrackerLabel     bool       `json:"sync_tracker_label"`
+	RadarrImportedLabel  string     `json:"radarr_imported_label,omitempty"`
+	SonarrImportedLabel  string     `json:"sonarr_imported_label,omitempty"`
 	TrackerLabelsPlanned int        `json:"tracker_labels_planned"`
 	TrackerLabelsChanged int        `json:"tracker_labels_changed"`
 	RunID                string     `json:"run_id"`

@@ -24,6 +24,8 @@ type Torrent struct {
 }
 type Decision struct {
 	TrackerLabel    *TrackerLabelDecision `json:"tracker_label,omitempty"`
+	RadarrImport    *RadarrImportDecision `json:"radarr_import,omitempty"`
+	SonarrImport    *SonarrImportDecision `json:"sonarr_import,omitempty"`
 	Hash            string                `json:"torrent_hash"`
 	Name            string                `json:"torrent_name"`
 	Category        string                `json:"category"`

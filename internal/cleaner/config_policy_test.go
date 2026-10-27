@@ -37,7 +37,11 @@ func TestConfigStrict(t *testing.T) {
 	}
 	valid := string(b)
 	for name, change := range map[string]func(string) string{
-		"unknown":         func(s string) string { return s + "unexpected: token-canary\n" },
+		"unknown":             func(s string) string { return s + "unexpected: token-canary\n" },
+		"root imported label": func(s string) string { return s + "radarr_imported_label: custom\n" },
+		"Transmission imported label": func(s string) string {
+			return strings.Replace(s, "transmission:\n", "transmission:\n  imported_label: custom\n", 1)
+		},
 		"duplicate":       func(s string) string { return s + "rules: []\n" },
 		"second document": func(s string) string { return s + "---\n{}\n" },
 		"missing ratio":   func(s string) string { return strings.ReplaceAll(s, "    ratio: 2\n", "") },
@@ -130,6 +134,35 @@ func TestConfigTrackerLabelSync(t *testing.T) {
 				t.Fatalf("sync = %v, want %v", c.SyncTrackerLabel, tc.want)
 			}
 		})
+	}
+}
+
+func TestConfigArrImportedLabels(t *testing.T) {
+	data, err := os.ReadFile("../../config.example.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, service := range []string{"sonarr", "radarr"} {
+		for _, tc := range []struct {
+			value   string
+			invalid bool
+		}{
+			{value: ""}, {value: `""`}, {value: "media-finished"}, {value: `"My Imported Media"`},
+			{value: "true", invalid: true}, {value: "123", invalid: true}, {value: "null", invalid: true},
+			{value: "[]", invalid: true}, {value: `" media-finished"`, invalid: true},
+			{value: `"media-finished "`, invalid: true}, {value: `"media\nfinished"`, invalid: true},
+		} {
+			t.Run(service+"/"+tc.value, func(t *testing.T) {
+				text := string(data)
+				if tc.value != "" {
+					text = strings.Replace(text, service+":\n", service+":\n  imported_label: "+tc.value+"\n", 1)
+				}
+				_, err := ParseConfig(strings.NewReader(text), testCredentialsLookup)
+				if (err != nil) != tc.invalid {
+					t.Fatalf("error=%v, want invalid=%t", err, tc.invalid)
+				}
+			})
+		}
 	}
 }
 
