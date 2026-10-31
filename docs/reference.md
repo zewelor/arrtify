@@ -23,6 +23,10 @@ Exit 0 means complete; 2 means invalid CLI/configuration/environment; 1 means a
 source, execution, cancellation, or report-output error. Forced termination can
 prevent the final report.
 
+Cleanup events `delete_requested`, `torrent_removed`, `cleanup_failed` and
+`operation_unknown` each include `torrent_hash` and `torrent_name`, identifying
+the torrent even if execution stops before the final `torrent_decision` event.
+
 ## Policy
 
 Category is the final component of Transmission's absolute `download_dir`,

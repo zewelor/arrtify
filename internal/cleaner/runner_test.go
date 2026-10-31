@@ -260,6 +260,36 @@ func TestRunApplyRevalidatesAndConfirmsRemoval(t *testing.T) {
 			if strings.Contains(logs.String(), "secret-canary") {
 				t.Fatal("raw RPC data leaked into logs")
 			}
+			wantEvents := []string{}
+			if tc.attempted > 0 {
+				wantEvents = append(wantEvents, "delete_requested")
+			}
+			switch tc.outcome {
+			case "removed":
+				wantEvents = append(wantEvents, "torrent_removed")
+			case "failed":
+				wantEvents = append(wantEvents, "cleanup_failed")
+			case "unknown":
+				wantEvents = append(wantEvents, "operation_unknown")
+			}
+			gotEvents := []string{}
+			decoder := json.NewDecoder(strings.NewReader(logs.String()))
+			for decoder.More() {
+				var event map[string]any
+				if err := decoder.Decode(&event); err != nil {
+					t.Fatal(err)
+				}
+				if event["event"] == "torrent_decision" {
+					break
+				}
+				if event["torrent_hash"] != hash || event["torrent_name"] != "Synthetic" {
+					t.Fatalf("cleanup event does not identify the torrent: %v", event)
+				}
+				gotEvents = append(gotEvents, event["event"].(string))
+			}
+			if !reflect.DeepEqual(gotEvents, wantEvents) {
+				t.Fatalf("events before torrent_decision: got %v, want %v", gotEvents, wantEvents)
+			}
 		})
 	}
 }

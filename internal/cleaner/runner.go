@@ -163,7 +163,7 @@ func applyCleanup(ctx context.Context, rpc *transmissionRPC, c Config, report *R
 			cleanupFailure(report, d, logger, err)
 			return
 		}
-		logger.Info("torrent removal requested", "event", "delete_requested", "torrent_hash", d.Hash, "rule", d.Rule)
+		torrentLogger(logger, *d, "delete_requested").Info("torrent removal requested", "rule", d.Rule)
 		report.Attempted++
 		if err := rpc.remove(ctx, d.Hash); err != nil {
 			d.Outcome, d.Reason = "unknown", "operation_unknown"
@@ -183,7 +183,7 @@ func applyCleanup(ctx context.Context, rpc *transmissionRPC, c Config, report *R
 			return
 		}
 		d.Outcome = "removed"
-		logger.Info("torrent removed", "event", "torrent_removed", "torrent_hash", d.Hash, "rule", d.Rule)
+		torrentLogger(logger, *d, "torrent_removed").Info("torrent removed", "rule", d.Rule)
 	}
 }
 
@@ -203,14 +203,22 @@ func cleanupFailure(report *RunReport, d *Decision, logger *slog.Logger, err err
 	if d.Outcome == "unknown" {
 		event = "operation_unknown"
 	}
-	logger.Error("torrent cleanup failed", "event", event, "torrent_hash", d.Hash, "outcome", d.Outcome, "error", err)
+	torrentLogger(logger, *d, event).Error("torrent cleanup failed",
+		"outcome", d.Outcome,
+		"error", err,
+	)
+}
+
+func torrentLogger(logger *slog.Logger, d Decision, event string) *slog.Logger {
+	return logger.With(
+		"event", event,
+		"torrent_hash", d.Hash,
+		"torrent_name", d.Name,
+	)
 }
 
 func logDecision(logger *slog.Logger, d Decision) {
 	attrs := []any{
-		"event", "torrent_decision",
-		"torrent_hash", d.Hash,
-		"torrent_name", d.Name,
 		"category", d.Category,
 		"reason", d.Reason,
 		"outcome", d.Outcome,
@@ -234,5 +242,5 @@ func logDecision(logger *slog.Logger, d Decision) {
 	if d.SonarrImport != nil {
 		attrs = append(attrs, "sonarr_import", d.SonarrImport)
 	}
-	logger.Info("torrent decision", attrs...)
+	torrentLogger(logger, d, "torrent_decision").Info("torrent decision", attrs...)
 }

@@ -620,6 +620,15 @@ func verifyOutput(t *testing.T, out, logs []byte, code int) cleaner.RunReport {
 		if event["run_id"] != report.RunID || event["mode"] != report.Mode || event["app_version"] != report.Version {
 			t.Fatal("log/report metadata mismatch")
 		}
+		switch event["event"] {
+		case "delete_requested", "torrent_removed", "cleanup_failed", "operation_unknown",
+			"torrent_decision", "tracker_label_synced", "tracker_label_failed":
+			hash, _ := event["torrent_hash"].(string)
+			want, ok := expected[hash]
+			if !ok || event["torrent_name"] != want["torrent_name"] {
+				t.Fatalf("event does not identify the torrent: %v", event)
+			}
+		}
 		if event["event"] == "run_finished" {
 			for _, key := range []string{"scanned", "planned", "attempted", "skipped", "would_delete", "removed", "failed", "unknown", "not_attempted", "errors", "status"} {
 				if !reflect.DeepEqual(event[key], payload[key]) {

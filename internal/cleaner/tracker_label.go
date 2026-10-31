@@ -105,7 +105,11 @@ func syncTrackerLabels(ctx context.Context, rpc *transmissionRPC, ignored []stri
 			plan.Outcome = "removed"
 		}
 		report.TrackerLabelsChanged++
-		logger.Info("tracker label synchronized", "event", "tracker_label_synced", "torrent_hash", d.Hash, "torrent_name", d.Name, "label", ignoredTrackerLabel, "action", plan.Action, "outcome", plan.Outcome)
+		torrentLogger(logger, *d, "tracker_label_synced").Info("tracker label synchronized",
+			"label", ignoredTrackerLabel,
+			"action", plan.Action,
+			"outcome", plan.Outcome,
+		)
 	}
 }
 
@@ -127,5 +131,9 @@ func labelSyncFailure(report *RunReport, d *Decision, logger *slog.Logger, err e
 		d.TrackerLabel.Outcome = "unknown"
 	}
 	report.Errors++
-	logger.Error("tracker label synchronization failed", "event", "tracker_label_failed", "torrent_hash", d.Hash, "torrent_name", d.Name, "action", d.TrackerLabel.Action, "outcome", d.TrackerLabel.Outcome, "error", err)
+	torrentLogger(logger, *d, "tracker_label_failed").Error("tracker label synchronization failed",
+		"action", d.TrackerLabel.Action,
+		"outcome", d.TrackerLabel.Outcome,
+		"error", err,
+	)
 }
