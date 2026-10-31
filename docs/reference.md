@@ -27,6 +27,13 @@ Cleanup events `delete_requested`, `torrent_removed`, `cleanup_failed` and
 `operation_unknown` each include `torrent_hash` and `torrent_name`, identifying
 the torrent even if execution stops before the final `torrent_decision` event.
 
+Keep both fields: `torrent_name` makes logs readable, while `torrent_hash`
+identifies the torrent unambiguously. Different torrents can have the same name,
+so names must not be used as identity keys. The hash correlates removal requests,
+results, errors and decisions. The GitOps Grafana dashboard also groups decisions
+by hash to select the latest decision for each torrent without merging torrents
+that share a name.
+
 ## Policy
 
 Category is the final component of Transmission's absolute `download_dir`,
