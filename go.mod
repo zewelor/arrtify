@@ -2,7 +2,7 @@ module github.com/zewelor/arrtify
 
 go 1.27.4
 
-require go.yaml.in/yaml/v3 v3.0.5
+require go.yaml.in/yaml/v4 v4.0.0
 
 require (
 	golang.org/x/mod v0.42.0 // indirect
