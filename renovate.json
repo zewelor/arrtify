@@ -1,5 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
-  "automerge": false
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "github>zewelor/renovate-config//presets/github-actions",
+    "github>zewelor/renovate-config//presets/go"
+  ],
+  "automerge": false,
+  "platformAutomerge": false
 }
