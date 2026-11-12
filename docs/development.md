@@ -2,7 +2,7 @@
 
 These notes describe cleanup execution, optional tracker-label synchronization,
 verification and proof boundaries.
-The module uses the installed Go 1.27.3 toolchain, standard
+The module uses the Go toolchain declared in `go.mod`, standard
 library boundaries, and `go.yaml.in/yaml/v3` v3.0.5. `govulncheck` is pinned through
 Go's module tool mechanism. There are no other runtime dependencies.
 
