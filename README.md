@@ -85,4 +85,4 @@ just ci       # Run the full local and CI checks
 ```
 
 Development uses the Go toolchain declared in [go.mod](go.mod), plus Just.
-The full CI gate also requires Docker.
+The full CI gate also requires Docker. CI runs for pull requests and pushes to `main`. After CI passes, pushes to `main` and manual runs on `main` publish an image, including test-only and configuration-only changes.
