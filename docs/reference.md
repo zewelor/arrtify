@@ -245,7 +245,7 @@ normalization and remove-target fuzzing pilots. See [development.md](development
 API contracts, limits, test decisions, and boundaries of the evidence.
 
 GitHub Actions runs the same checks with read-only repository permissions. After
-they pass on `main`, a separate job publishes `ghcr.io/zewelor/arrtify:latest` for
+they pass on a push or manual run on `main`, a separate job publishes `ghcr.io/zewelor/arrtify:latest` for
 linux/amd64 and linux/arm64, stamps `app_version` with the source commit, and
 reports its digest. Only that job receives package write permission. GitOps pins
 the published digest. Renovate uses shared Go and GitHub Actions presets and
